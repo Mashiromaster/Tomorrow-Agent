@@ -1,0 +1,115 @@
+# XcodeGen spec for the three targets in IMPLEMENTATION.md §10 Phase 0.
+#
+# The project file is generated rather than committed, for one practical
+# reason: a `.xcodeproj` is a merge-hostile blob, and the thing that actually
+# describes the project — which targets exist, what they link, which
+# entitlements they carry — is legible here and reviewable in a diff.
+#
+# Regenerate after editing:
+#     cd ios && xcodegen generate
+#
+# ## Why "三 target" is really two plus a package
+#
+# §10 asks for App + ShareExtension + a shared framework. The shared code is
+# an SPM package (`core/` and `ios/Package.swift`) rather than an Xcode
+# framework target, which gets the same sharing with two advantages: it builds
+# and tests with `swift test` on a machine with no Xcode — which is how all
+# 293 of its tests were written — and the App/Extension boundary cannot
+# accidentally become a dependency cycle.
+
+name: PAgent
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+  # Generated file; see the note above.
+  generateEmptyDirectories: false
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    # §4.1 calls for strict concurrency. It is on from the start because
+    # retrofitting it onto a UI layer that has already accumulated shared
+    # mutable state is far more work than starting with it.
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_UPCOMING_FEATURE_CONCURRENCY: "YES"
+    ENABLE_USER_SCRIPT_SANDBOXING: "YES"
+    # Left unset deliberately: signing needs a real team, and baking a
+    # placeholder in would fail in a way that looks like a project bug.
+    CODE_SIGN_STYLE: Automatic
+    # Both targets need this for App Attest and the shared store; see the
+    # per-target entitlements files.
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+packages:
+  PAgentCore:
+    path: ../core
+  PAgentData:
+    path: .
+
+targets:
+  PAgent:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+        # Both are referenced by build settings rather than copied, and
+        # listing them as sources too would also bundle them as loose
+        # resources. `PrivacyInfo.xcprivacy` is *not* excluded — it has to
+        # ship inside the bundle for §9.2.
+        excludes:
+          - Info.plist
+          - PAgent.entitlements
+    dependencies:
+      - package: PAgentCore
+        product: PAgentCore
+      - package: PAgentCore
+        product: PAgentNet
+      - package: PAgentData
+        product: PAgentData
+      # Embedded, not linked: an app extension is a separate executable.
+      - target: PAgentShareExtension
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.PAgent
+        INFOPLIST_FILE: App/Info.plist
+        CODE_SIGN_ENTITLEMENTS: App/PAgent.entitlements
+        # The checked-in Info.plist is the source of truth. Without this,
+        # Xcode synthesises one and the §9.1 usage descriptions — the strings
+        # review actually reads — are silently dropped.
+        GENERATE_INFOPLIST_FILE: "NO"
+        TARGETED_DEVICE_FAMILY: "1"
+
+  PAgentShareExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: ShareExtension
+        excludes:
+          - Info.plist
+          - ShareExtension.entitlements
+    dependencies:
+      - package: PAgentCore
+        product: PAgentCore
+      - package: PAgentData
+        product: PAgentData
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.PAgent.ShareExtension
+        INFOPLIST_FILE: ShareExtension/Info.plist
+        CODE_SIGN_ENTITLEMENTS: ShareExtension/ShareExtension.entitlements
+        GENERATE_INFOPLIST_FILE: "NO"
+        TARGETED_DEVICE_FAMILY: "1"
+
+schemes:
+  PAgent:
+    build:
+      targets:
+        PAgent: all
+    run:
+      config: Debug
+    test:
+      config: Debug

@@ -1,0 +1,14 @@
+# Local secrets for `wrangler dev`. Copy to `.dev.vars` and fill in.
+# `.dev.vars` is gitignored; this example file is not.
+#
+# In production these are set with `wrangler secret put`, never committed.
+
+# From https://platform.deepseek.com — the only credential that can spend money.
+DEEPSEEK_API_KEY="sk-..."
+
+# HMAC-SHA256 key for short-lived device tokens. Any high-entropy string;
+# generate one with:  openssl rand -base64 48
+#
+# `scripts/verify-cache.mjs` reads this to mint a token without App Attest,
+# so it has to match whichever deployment you point the script at.
+JWT_SIGNING_KEY="replace-me-with-48-random-bytes"

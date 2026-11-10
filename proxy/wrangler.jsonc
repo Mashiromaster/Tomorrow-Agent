@@ -1,0 +1,38 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pagent-proxy",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Metadata-only observability. Request/response bodies are never logged
+  // (see src/metrics.ts) — that is the technical backing for the privacy
+  // promise in IMPLEMENTATION.md §8/§9.
+  "observability": { "enabled": true },
+
+  "kv_namespaces": [
+    // Attested App Attest public keys, keyed by keyId. One record per device.
+    { "binding": "DEVICES", "id": "REPLACE_WITH_KV_ID", "preview_id": "REPLACE_WITH_KV_PREVIEW_ID" },
+    // Monthly request counters, keyed by device + month.
+    { "binding": "QUOTA", "id": "REPLACE_WITH_KV_ID", "preview_id": "REPLACE_WITH_KV_PREVIEW_ID" }
+  ],
+
+  "vars": {
+    "APPLE_TEAM_ID": "REPLACE_TEAM_ID",
+    "APP_BUNDLE_ID": "com.example.PAgent",
+    // "development" accepts the aaguid "appattestdevelop" (Xcode/TestFlight
+    // debug builds). Must be "production" before shipping, or a debug build
+    // can mint tokens against the production key.
+    "APP_ATTEST_ENV": "development",
+    "UPSTREAM_BASE_URL": "https://api.deepseek.com/anthropic",
+    // Recomputed against DeepSeek pricing — see docs/DEEPSEEK.md § Cost model.
+    // 20/400 was sized against Opus at $5/MTok; the same spend now buys ~18×
+    // more. 100 free plans cost ~$0.37/mo at worst (all v4-pro, all peak).
+    "FREE_MONTHLY_REQUESTS": "100",
+    "PRO_MONTHLY_REQUESTS": "2000"
+  }
+
+  // Secrets (set via `wrangler secret put`, never committed):
+  //   DEEPSEEK_API_KEY  — injected into the upstream request
+  //   JWT_SIGNING_KEY    — HMAC-SHA256 key for short-lived device tokens
+}

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <!--
+    App Attest (§2.3). The device holds a Secure Enclave key, not an API key;
+    an assertion from that key is what the proxy exchanges for a 15-minute
+    token.
+
+    `development` accepts attestations from debug and TestFlight builds. The
+    proxy has a matching `APP_ATTEST_ENV` var, and **both must be flipped to
+    `production` before shipping** — the proxy's `wrangler.jsonc` says the
+    same thing from the other side. A production proxy that still accepts
+    development attestations would let a debug build mint tokens against the
+    real API key.
+  -->
+  <key>com.apple.developer.devicecheck.appattest-environment</key>
+  <string>development</string>
+
+  <!--
+    Shared with the Share Extension. §4.1 makes the extension the only general
+    route for content from other apps, and it runs in its own sandbox — so the
+    SwiftData store has to live in a container both processes can reach. See
+    `PAgentSchema.sharedStoreURL()`.
+  -->
+  <key>com.apple.security.application-groups</key>
+  <array>
+    <string>group.com.example.PAgent</string>
+  </array>
+
+  <!--
+    Deliberately absent:
+
+    - `com.apple.developer.healthkit` — Phase 3 (§10). R4 ranks it last
+      because it carries the most review friction, and nothing before it
+      depends on it.
+    - `com.apple.developer.icloud-*` — §9.3 forbids writing health data to
+      iCloud, and `SignalEvent` holds every source in one table, so the store
+      is built with `cloudKitDatabase: .none`. Having no iCloud entitlement at
+      all means the compliance guarantee cannot be undone by a container
+      setting changed later.
+  -->
+</dict>
+</plist>

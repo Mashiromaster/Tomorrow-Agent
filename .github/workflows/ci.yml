@@ -1,0 +1,160 @@
+name: CI
+
+# Gates every push and PR on the four test suites plus the iOS build.
+#
+# ## Runner choice
+#
+# **Swift on macOS, because it has to be.** `ios/` needs the iOS SDK and the
+# SwiftData macro plugin, which ship only inside Xcode. `core/` could build on
+# Linux, but testing the packages under a different toolchain than the one
+# that builds the app would miss exactly the failures that matter — the
+# `#Predicate` rework of 2026-11-11 was that class of problem.
+#
+# **Everything else on Linux.** macOS runners bill at 10× the rate, and the
+# proxy does not need them: `@cloudflare/workerd-linux-64` is in the lockfile,
+# so Miniflare runs the real workerd engine on Linux just as it does locally.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  swift:
+    name: Swift — core + ios
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pick the newest Xcode the image has, rather than the floating
+      # `Xcode.app` symlink — an image bump moves that symlink, and a macro
+      # expansion change arriving that way would look like a code regression.
+      #
+      # Note CI runs an **older toolchain than local development**: the
+      # macos-26 image tops out at Xcode 26.6, while this project is developed
+      # against 27.2. That gap is deliberate for now (26.x is what the hosted
+      # runners offer) and is the reason `deploymentTarget: iOS 26.0` in
+      # project.yml matters — it keeps the build honest on both. If a failure
+      # reproduces only here, suspect the toolchain before the code.
+      - name: Select Xcode
+        run: |
+          newest="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)"
+          if [[ -z "$newest" ]]; then
+            echo "::error::no versioned Xcode found on the runner"
+            ls /Applications | grep -i xcode || true
+            exit 1
+          fi
+          echo "selecting $newest"
+          sudo xcode-select -s "$newest"
+          xcodebuild -version
+          swift --version
+          xcodebuild -showsdks | grep -i iphoneos
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            core/.build
+            ios/.build
+          key: spm-${{ runner.os }}-${{ hashFiles('**/Package.swift', '**/Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      - name: Test PAgentCore and PAgentNet
+        working-directory: core
+        run: swift test
+
+      # Runtime schema verification. Compiling a `@Model` class does not prove
+      # SwiftData can translate it — a bad `#Predicate` or an unpersistable
+      # attribute fails at `ModelContainer` creation, which is to say at launch.
+      - name: Test PAgentData schema
+        working-directory: ios
+        run: swift test
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      # The project file is generated, not committed, so CI regenerates it.
+      # That also verifies `project.yml` is self-sufficient.
+      - name: Generate the Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Build all three targets
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project PAgent.xcodeproj \
+            -scheme PAgent \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tee /tmp/build.log | tail -40
+
+      # Strict concurrency is on in `project.yml`, so a warning in first-party
+      # code is a correctness signal rather than style — the 2026-11-10
+      # `BGTask` data-race fix surfaced exactly this way.
+      #
+      # Reads the log from the build above rather than rebuilding: a second
+      # xcodebuild run costs minutes and could, in principle, differ from the
+      # one whose result we actually shipped.
+      - name: Fail on Swift warnings
+        run: |
+          if grep -E '^/.*/(ios|core)/.*warning:' /tmp/build.log | sort -u > /tmp/warnings.log && [[ -s /tmp/warnings.log ]]; then
+            echo "::error::Swift warnings in first-party code:"
+            cat /tmp/warnings.log
+            exit 1
+          fi
+          echo "no first-party warnings"
+
+  proxy:
+    name: Proxy and scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: proxy/package-lock.json
+
+      - name: Install
+        working-directory: proxy
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: proxy
+        run: npm run typecheck
+
+      # Runs in the real workerd runtime via Miniflare, not a Node shim — so
+      # the App Attest crypto and the SSE streaming are exercised against the
+      # same engine that serves production.
+      - name: Test
+        working-directory: proxy
+        run: npm test
+
+      # These two are what a human runs against production. A syntax error in
+      # either surfaces at the worst possible moment otherwise.
+      - name: Check verify-cache.mjs
+        working-directory: proxy
+        run: node --check scripts/verify-cache.mjs
+
+      - name: Check deploy.sh
+        working-directory: proxy
+        run: bash -n scripts/deploy.sh
+
+      # `deploy.sh` has to run under macOS bash 3.2, which has no associative
+      # arrays — a `declare -A` slipped in during development and only failed
+      # when the script was actually run. ShellCheck catches that class of
+      # bashism; a `bash -n` under bash 5 waves it through.
+      - name: ShellCheck deploy.sh
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y shellcheck
+          shellcheck --shell=bash --severity=warning proxy/scripts/deploy.sh

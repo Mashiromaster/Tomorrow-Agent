@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <!--
+    The same App Group as the app, and the only entitlement this target has.
+
+    The extension runs in its own sandbox, so this is what lets a shared link
+    land in the store the nightly digest reads. See
+    `PAgentSchema.sharedStoreURL()`.
+
+    No App Attest entitlement here on purpose: the extension never talks to
+    the proxy. It writes a `SignalEvent` and exits. Everything that leaves the
+    device goes through the app, which keeps the §9.4 untrusted-input path and
+    the network path in separate processes.
+  -->
+  <key>com.apple.security.application-groups</key>
+  <array>
+    <string>group.com.example.PAgent</string>
+  </array>
+</dict>
+</plist>

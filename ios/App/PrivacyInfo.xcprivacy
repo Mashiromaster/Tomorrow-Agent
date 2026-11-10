@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Privacy manifest (§9.2). Required for App Store submission since May 2024.
+
+  ## This file describes *this binary*, not the roadmap
+
+  §9.2 enumerates the data types the finished product will touch — location,
+  health, calendar, photos, user content. That is the right list for the §10
+  Phase 4 submission. It is the wrong list for Phase 1, and the difference
+  matters in both directions: a manifest is a statement about what the
+  shipped app does, so declaring HealthKit collection before HealthKit exists
+  overstates the app's reach, while declaring nothing understates it.
+
+  So this manifest covers Phase 1 scope (EventKit only), and the table at the
+  bottom records exactly what each later phase has to add. **Re-audit this
+  file whenever a data source is switched on** — it is the one compliance
+  artifact with no compiler and no test to catch drift.
+
+  ## Why the raw sources are not declared as collected
+
+  Apple defines "collect" as transmitting data off the device in a way that
+  allows access beyond servicing the request. PAgent's architecture (§1, §3)
+  is built so that calendar, location, photo, and health data are *read on
+  device and never transmitted*: the only outbound personal payload is the
+  ≤500-token profile card in §6.3, plus whatever the user types. The store is
+  created with `cloudKitDatabase: .none` and the app carries no iCloud
+  entitlement, so there is no second path off the device.
+
+  What is therefore declared below is the card and the user's own text, as
+  "Other User Content" — the closest type Apple offers for a derived
+  natural-language preference summary.
+
+  **This is the judgement call most worth a second opinion before
+  submission.** The card is *derived from* calendar data, and a reviewer could
+  reasonably argue the source types should be declared too. Over-declaring is
+  the safe direction for review and the misleading direction for the privacy
+  label; under-declaring is a rejection risk. If review pushes back, the fix
+  is additive: add `Calendars` (and, per phase, `PreciseLocation` /
+  `PhotosorVideos` / `HealthFitness`) with the same purpose and the same
+  `LinkedToUser`/`Tracking` values already used here.
+-->
+<plist version="1.0">
+<dict>
+  <!-- §9.2: every entry is UsedForTracking = false, and the app has no
+       tracking domains. There is no analytics SDK, no ad network, and no
+       third-party SDK at all — §9.2 notes avoiding third-party SDKs is
+       partly to avoid their manifests and signatures. -->
+  <key>NSPrivacyTracking</key>
+  <false/>
+  <key>NSPrivacyTrackingDomains</key>
+  <array/>
+
+  <key>NSPrivacyCollectedDataTypes</key>
+  <array>
+    <dict>
+      <!-- The profile card (§6.3) and the user's typed request. Sent to
+           Anthropic via our proxy so a plan can be generated; the proxy
+           itself stores nothing (§8). -->
+      <key>NSPrivacyCollectedDataType</key>
+      <string>NSPrivacyCollectedDataTypeOtherUserContent</string>
+      <key>NSPrivacyCollectedDataTypeLinked</key>
+      <false/>
+      <key>NSPrivacyCollectedDataTypeTracking</key>
+      <false/>
+      <key>NSPrivacyCollectedDataTypePurposes</key>
+      <array>
+        <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+      </array>
+    </dict>
+  </array>
+
+  <key>NSPrivacyAccessedAPITypes</key>
+  <array>
+    <dict>
+      <!-- Settings and onboarding state. CA92.1 = the app's own defaults,
+           read and written only within this app and its App Group. -->
+      <key>NSPrivacyAccessedAPIType</key>
+      <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+      <key>NSPrivacyAccessedAPITypeReasons</key>
+      <array>
+        <string>CA92.1</string>
+      </array>
+    </dict>
+  </array>
+
+  <!--
+    ## Per-phase additions
+
+    | Phase | Source switched on | Add to NSPrivacyCollectedDataTypes |
+    |-------|--------------------|------------------------------------|
+    | 2     | Location (visit/region monitoring) | `NSPrivacyCollectedDataTypePreciseLocation` *only if* a coordinate is ever placed in an outbound request. If the device resolves places locally and sends only names, nothing is added. Decide by inspecting the actual request body, not by intent. |
+    | 2     | Photo metadata     | Nothing. §4.1 reads `creationDate`/`location` on device; no photo data is transmitted. |
+    | 3     | HealthKit          | Nothing *if* §9.3 holds — health data participates only in on-device inference and derived tags carry no raw figures. Verify by inspecting a real request before submitting. |
+    | 4     | StoreKit 2         | `NSPrivacyCollectedDataTypePurchaseHistory`, if receipt or subscription state is sent anywhere. |
+
+    Note the pattern: most additions are "nothing", because the architecture
+    keeps the data on device. That is the claim §1 makes, and this table is
+    where it either holds up or does not. Each cell says *verify against a
+    real request body* for the same reason R8 has a byte-level test — the
+    failure mode is an assumption that stopped being true.
+  -->
+</dict>
+</plist>

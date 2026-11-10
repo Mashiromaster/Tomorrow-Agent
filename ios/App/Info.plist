@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  §9.1 usage descriptions.
+
+  Every string below says *what is read*, *what it is used for*, and — where
+  it is the user's likely worry — *what is not read*. §9.1 is explicit that
+  vague descriptions get rejected ("泛泛而谈会被拒"), and the specific thing
+  reviewers look for is whether the stated purpose matches the data breadth
+  the app actually requests.
+
+  Note what is absent: `NSHealthShareUsageDescription`. HealthKit is Phase 3
+  (§10, and R4 ranks it last precisely because it carries the most review
+  friction). Shipping a usage description for a capability the app does not
+  request reads as scope the app has not justified, so the string is kept in
+  `../README.md` ready to paste in when the entitlement is added rather than
+  sitting here unused.
+-->
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>zh_CN</string>
+  <key>CFBundleDisplayName</key>
+  <string>PAgent</string>
+  <key>CFBundleExecutable</key>
+  <string>$(EXECUTABLE_NAME)</string>
+  <key>CFBundleIdentifier</key>
+  <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>$(PRODUCT_NAME)</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>$(MARKETING_VERSION)</string>
+  <key>CFBundleVersion</key>
+  <string>$(CURRENT_PROJECT_VERSION)</string>
+  <key>LSRequiresIPhoneOS</key>
+  <true/>
+  <key>UILaunchScreen</key>
+  <dict/>
+  <key>UISupportedInterfaceOrientations</key>
+  <array>
+    <string>UIInterfaceOrientationPortrait</string>
+  </array>
+
+  <!-- Calendars and Reminders. The iOS 17+ full-access keys; the older
+       NSCalendarsUsageDescription is not read on this deployment target. -->
+  <key>NSCalendarsFullAccessUsageDescription</key>
+  <string>PAgent 读取你的日程来找出空闲时段，并在你逐项确认后把安排好的行程写回日历。未经你点击确认，PAgent 不会创建或修改任何日程。</string>
+  <key>NSRemindersFullAccessUsageDescription</key>
+  <string>PAgent 在你确认行程后，为需要准备的事项创建提醒。未经你确认不会写入任何提醒。</string>
+
+  <!-- Location. Both keys are present because §9.3 requires the staged
+       request: ask for WhenInUse first, and only offer the upgrade once the
+       user has seen the feature work. The upgrade prompt needs the Always
+       key already declared. -->
+  <key>NSLocationWhenInUseUsageDescription</key>
+  <string>PAgent 用你当前的位置推荐附近的去处，并估算行程之间的通勤时间。</string>
+  <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+  <string>PAgent 在后台识别你常去的区域（例如「常在城西活动」），据此推荐更顺路的去处。它只在你到访和离开时记录区域，不做持续定位；你也可以只允许「使用时」访问，推荐依然可用。</string>
+
+  <!-- Photos. The "metadata only" clause is the load-bearing part: §4.1 reads
+       `PHAsset.location` and `creationDate` and never touches pixels, which is
+       both the privacy posture and the thing a reviewer will want stated. -->
+  <key>NSPhotoLibraryUsageDescription</key>
+  <string>PAgent 只读取照片的拍摄时间与拍摄地点，用来了解你去过哪些地方。它不读取、不分析、也不上传照片内容本身。</string>
+
+  <!-- §9.3 "AI 功能披露": the user is told at first launch and in settings
+       that complex planning sends the profile card to Anthropic. This string
+       is the copy the onboarding screen uses, kept here so it is reviewed
+       alongside the permission strings it belongs with. -->
+  <key>PAgentCloudProcessingDisclosure</key>
+  <string>复杂行程规划会把一张不超过 500 token 的「画像卡」发送至 Anthropic 处理。画像卡的完整原文可以在「设置 → 我发出去了什么」中随时查看。你的日历、位置、照片等原始数据不会离开这台设备。</string>
+
+  <!-- The proxy origin. Deliberately empty rather than defaulted: a
+       placeholder URL would turn "forgot to configure this" into a confusing
+       network error at the first request instead of a clear message at
+       launch. Set per-configuration so a TestFlight build can point at a
+       staging proxy without a code change. -->
+  <key>PAgentProxyBaseURL</key>
+  <string></string>
+
+  <key>BGTaskSchedulerPermittedIdentifiers</key>
+  <array>
+    <!-- §6.1's nightly digest. Runs on `BGProcessingTask` so it only fires
+         while charging and idle — on-device inference is expensive enough
+         that running it opportunistically would show up as battery drain. -->
+    <string>com.example.PAgent.nightly-digest</string>
+  </array>
+
+  <key>UIBackgroundModes</key>
+  <array>
+    <string>processing</string>
+  </array>
+
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <!-- No exceptions. The only host the app talks to is our own proxy over
+         HTTPS; an ATS exception here would be the easiest way to accidentally
+         weaken the one network path that carries the profile card. -->
+    <key>NSAllowsArbitraryLoads</key>
+    <false/>
+  </dict>
+</dict>
+</plist>

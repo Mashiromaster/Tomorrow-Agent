@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The Share Extension (§2.2, §4.1).
+
+  §2.2 establishes that an App Store app cannot read chat logs, browsing
+  history, or other apps' content, and concludes that a Share Extension is
+  the only general route for the user to hand PAgent something from
+  elsewhere. That makes this target the single most important capture path
+  in the design — and also the one that handles untrusted input (§9.4).
+
+  The activation rule below accepts links and plain text only. Deliberately
+  narrow: a rule that also matched images or files would put PAgent in the
+  share sheet for content it has nothing to do with, and §9.3 clause 5.1.1
+  (data minimisation) cuts against requesting breadth the feature does not
+  use.
+-->
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>zh_CN</string>
+  <key>CFBundleDisplayName</key>
+  <string>存入 PAgent</string>
+  <key>CFBundleExecutable</key>
+  <string>$(EXECUTABLE_NAME)</string>
+  <key>CFBundleIdentifier</key>
+  <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>$(PRODUCT_NAME)</string>
+  <key>CFBundlePackageType</key>
+  <string>XPC!</string>
+  <key>CFBundleShortVersionString</key>
+  <string>$(MARKETING_VERSION)</string>
+  <key>CFBundleVersion</key>
+  <string>$(CURRENT_PROJECT_VERSION)</string>
+
+  <key>NSExtension</key>
+  <dict>
+    <key>NSExtensionPointIdentifier</key>
+    <string>com.apple.share-services</string>
+    <key>NSExtensionPrincipalClass</key>
+    <string>$(PRODUCT_MODULE_NAME).ShareViewController</string>
+    <key>NSExtensionAttributes</key>
+    <dict>
+      <!-- Links and text, nothing else. One item at a time: a share is one
+           signal (§5.1), and batching several into one row would make the
+           evidence trail in §5.2 point at a blob rather than a thing. -->
+      <key>NSExtensionActivationRule</key>
+      <dict>
+        <key>NSExtensionActivationSupportsWebURLWithMaxCount</key>
+        <integer>1</integer>
+        <key>NSExtensionActivationSupportsText</key>
+        <true/>
+        <key>NSExtensionActivationSupportsAttachmentsWithMaxCount</key>
+        <integer>0</integer>
+        <key>NSExtensionActivationSupportsImageWithMaxCount</key>
+        <integer>0</integer>
+        <key>NSExtensionActivationSupportsMovieWithMaxCount</key>
+        <integer>0</integer>
+        <key>NSExtensionActivationSupportsFileWithMaxCount</key>
+        <integer>0</integer>
+      </dict>
+    </dict>
+  </dict>
+</dict>
+</plist>

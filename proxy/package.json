@@ -1,0 +1,29 @@
+{
+  "name": "pagent-proxy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Stateless Claude API proxy for PAgent. Authenticates devices via App Attest, injects the API key, enforces quota, and passes SSE through byte-for-byte.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.6.1",
+    "@cloudflare/workers-types": "^5.20261110.1",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.159.0"
+  },
+  "dependencies": {
+    "@peculiar/asn1-schema": "^3.0.0",
+    "@peculiar/asn1-x509": "^3.0.0",
+    "@peculiar/x509": "^3.1.0",
+    "cborg": "^6.2.1",
+    "hono": "^4.13.17",
+    "reflect-metadata": "^0.2.2"
+  }
+}
