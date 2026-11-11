@@ -19,17 +19,29 @@ import PAgentCore
 /// Convert at the boundary — see `Bridging.swift`.
 @Model
 public final class SignalEvent {
-    /// Both access patterns the digest needs: a window over `occurredAt`
-    /// (§6.1 sorts by it) and a per-source sweep for the settings screen's
-    /// "turn this source off and forget it" action (§9.3 clause 5.1.1).
-    #Index<SignalEvent>([\.occurredAt], [\.source])
+    /// Only `occurredAt` — the window §6.1 sorts by.
+    ///
+    /// `source` is deliberately **not** indexed. A `Codable` enum is persisted
+    /// as a composite attribute, and CoreData cannot build an index element
+    /// over one: `NSInvalidArgumentException: Can't create an index element
+    /// with composite property`, thrown at `ModelContainer` creation — i.e. at
+    /// launch. Xcode 27.2 happens to tolerate it; 26.6 does not, so this
+    /// reached us from CI rather than from a device.
+    ///
+    /// The per-source sweep (§9.3 clause 5.1.1) therefore scans. That is the
+    /// right trade here: it runs once, from a settings tap, over a table
+    /// capped at 180 days by `RetentionSweeper`. Indexing would mean storing a
+    /// parallel `String` purely to satisfy the index — see `sourceRaw` on the
+    /// day that sweep actually gets slow.
+    #Index<SignalEvent>([\.occurredAt])
 
     /// Stable across a replay. Unique because §5.2's `TagEvidence` points
     /// back here by id, and a duplicate would double-count one signal.
     @Attribute(.unique) public var id: UUID
 
-    /// Stored as the raw string, so adding a `SignalSource` case does not
-    /// renumber the existing rows.
+    /// A `String`-backed enum, so adding a `SignalSource` case does not
+    /// renumber existing rows. Note that SwiftData still persists it as a
+    /// composite rather than as the bare raw value — see the `#Index` note.
     public var source: SignalSource
 
     /// When the described thing happened — not when it was captured. A photo

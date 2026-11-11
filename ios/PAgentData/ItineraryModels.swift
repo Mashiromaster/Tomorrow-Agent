@@ -18,7 +18,10 @@ import PAgentCore
 /// where they are testable; this type is the persisted projection.
 @Model
 public final class ItineraryProposal {
-    #Index<ItineraryProposal>([\.createdAt], [\.status])
+    /// Only `createdAt`. `status` is a `Codable` enum, which SwiftData
+    /// persists as a composite attribute — and CoreData cannot build an index
+    /// element over one. See the longer note on `SignalEvent`'s `#Index`.
+    #Index<ItineraryProposal>([\.createdAt])
 
     @Attribute(.unique) public var id: UUID
 
