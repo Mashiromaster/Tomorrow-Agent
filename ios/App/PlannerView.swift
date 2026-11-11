@@ -1,332 +1,497 @@
-import SwiftData
 import SwiftUI
 
 import PAgentCore
-import PAgentNet
 
-/// The Phase 0 acceptance screen.
+/// The conversation screen.
 ///
-/// §10 Phase 0 asks for one thing to work end to end on a real device:
-/// *locally construct `messages` → through the proxy → Claude streams text →
-/// the UI renders it*, **with no personal data involved**. This view is that
-/// path, and nothing more.
+/// ## Why a transcript rather than a form
 ///
-/// Two deliberate omissions, both of which are later phases:
+/// The Phase 0 version was a `Form` with one request and one answer, built to
+/// prove the chain worked rather than to be used. A resident agent is a
+/// conversation: what the model did — thought, called a tool, thought again —
+/// is as much the content as the final prose, and a form has nowhere to put
+/// that sequence.
 ///
-/// - **No profile card.** The card is sent as a literal placeholder here, so
-///   the acceptance run carries no personal data at all. Generating a real one
-///   needs the §6.1 digest, which is Phase 2.
-/// - **No tool execution.** `search_calendar` and friends need EventKit and
-///   MapKit, which is Phase 1. ``UnavailableToolExecutor`` returns a described
-///   failure instead, which the model can route around — see the note there.
+/// ## What survives from the acceptance screen
 ///
-/// What it *does* surface, prominently, is `cache_read_input_tokens`. That is
-/// the only observable signal for R8 (§7.3: under-length or byte-unstable
-/// prefixes fail silently), and Phase 1's acceptance bar is a >80% hit rate.
-/// Putting it on screen means a broken cache is noticed during development
-/// rather than in a bill.
-struct PlannerView: View {
-    @State private var model = PlannerModel()
-    @State private var prompt = "用三句话介绍你能帮我做什么。"
+/// Two things, because both are load-bearing rather than decorative:
+///
+/// - **`cache_read_input_tokens`**, in the per-turn footer. It is the only
+///   observable signal for R8 (§7.3: byte-unstable prefixes fail silently),
+///   and Phase 1's bar is a >80% hit rate. On screen means a broken cache is
+///   noticed during development rather than in a bill.
+/// - **"我发出去了什么"** (§9.3 clause 5.1.2) — the real request bytes, not a
+///   summary. §1 claims only a ≤500-token card leaves the device; a screen
+///   that paraphrased would be asking the user to take that on trust.
+public struct PlannerView: View {
+    @State private var model: PlannerModel
+    @State private var draft = ""
+    @State private var showingDisclosure = false
+    @FocusState private var composerFocused: Bool
+
+    /// - Parameter tokenProvider: how to authenticate to the proxy. Defaults
+    ///   to App Attest; the macOS harness in `tools/` passes a signed-token
+    ///   stand-in so this can run where `DCAppAttestService` does not exist.
+    private let initialPrompt: String?
+
+    /// - Parameter initialPrompt: sent once on appear. Used by the macOS
+    ///   harness to reach a mid-conversation state without driving the
+    ///   keyboard; `nil` in the shipping app.
+    public init(
+        tokenProvider: PlannerModel.TokenProviderFactory? = nil,
+        initialPrompt: String? = nil
+    ) {
+        _model = State(initialValue: PlannerModel(tokenProvider: tokenProvider))
+        self.initialPrompt = initialPrompt
+    }
+
+    public var body: some View {
+        VStack(spacing: 0) {
+            transcript
+            Divider()
+            composer
+        }
+        // `Color(.windowBackground)` / `.systemBackground` rather than the
+        // semantic `.background` style: that one resolves to a material, which
+        // on macOS renders translucent and shows whatever is behind the
+        // window. A transcript has to be readable over anything.
+        #if os(macOS)
+            .background(Color(nsColor: .windowBackgroundColor))
+        #else
+            .background(Color(uiColor: .systemBackground))
+        #endif
+        .navigationTitle("PAgent")
+        #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button("我发出去了什么", systemImage: "doc.text.magnifyingglass") {
+                        showingDisclosure = true
+                    }
+                    .disabled(model.lastRequestBody == nil)
+
+                    Button("清空对话", systemImage: "trash", role: .destructive) {
+                        model.clear()
+                    }
+                    .disabled(model.turns.isEmpty)
+                } label: {
+                    Label("更多", systemImage: "ellipsis.circle")
+                }
+            }
+        }
+        .sheet(isPresented: $showingDisclosure) {
+            OutboundDisclosureView(requestBody: model.lastRequestBody)
+        }
+        .task {
+            if let initialPrompt, model.turns.isEmpty { model.send(initialPrompt) }
+        }
+    }
+
+    // MARK: - Transcript
+
+    private var transcript: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 24) {
+                    if model.turns.isEmpty {
+                        EmptyStateView { draft = $0 }
+                            .padding(.top, 48)
+                    }
+                    ForEach(model.turns) { turn in
+                        TurnView(turn: turn) { model.retry(turn) }
+                            .id(turn.id)
+                    }
+                    // Scroll anchor. Scrolling to the last *turn* would put its
+                    // top at the top of the viewport, hiding the streaming text
+                    // below the fold — which is the part worth watching.
+                    Color.clear.frame(height: 1).id(Self.bottomAnchor)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 20)
+                .frame(maxWidth: 760, alignment: .leading)
+                .frame(maxWidth: .infinity)
+            }
+            .onChange(of: model.turns.count) { scrollToBottom(proxy) }
+            .onChange(of: model.turns.last?.segments.count) { scrollToBottom(proxy) }
+        }
+    }
+
+    private static let bottomAnchor = "bottom"
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        withAnimation(.easeOut(duration: 0.2)) {
+            proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
+        }
+    }
+
+    // MARK: - Composer
+
+    private var composer: some View {
+        HStack(alignment: .bottom, spacing: 10) {
+            inputField
+            sendButton
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .frame(maxWidth: 760)
+        .frame(maxWidth: .infinity)
+    }
+
+    // Split out of `composer` rather than written as one chain: a long
+    // modifier chain with a `#if` in the middle made the type-checker give up
+    // entirely ("failed to produce diagnostic for expression"), pointing at a
+    // line several statements away.
+    private var inputField: some View {
+        TextField("想让 PAgent 做什么…", text: $draft, axis: .vertical)
+            .textFieldStyle(.plain)
+            .lineLimit(1...6)
+            .focused($composerFocused)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(fieldBackground)
+            .onSubmit(submit)
+    }
+
+    private var fieldBackground: some View {
+        RoundedRectangle(cornerRadius: 20, style: .continuous)
+            .fill(.quaternary.opacity(0.5))
+            .overlay(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .stroke(.separator, lineWidth: 0.5)
+            )
+    }
+
+    private var sendButton: some View {
+        // An explicit closure rather than `action: isRunning ? model.cancel
+        // : submit` — a ternary over a method reference and a local function
+        // is what actually broke inference, and the compiler blamed `.help`
+        // two lines down.
+        Button {
+            if model.isRunning { model.cancel() } else { submit() }
+        } label: {
+            Image(systemName: model.isRunning ? "stop.fill" : "arrow.up")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 32, height: 32)
+                .background(Circle().fill(sendTint))
+        }
+        .buttonStyle(.plain)
+        .disabled(!model.isRunning && draft.trimmed.isEmpty)
+        .help(model.isRunning ? "停止" : "发送")
+    }
+
+    /// Concrete `Color` rather than an opaque `ShapeStyle`: mixing
+    /// `AnyShapeStyle` branches here defeated the type-checker outright
+    /// ("failed to produce diagnostic"), and the button only ever needs three
+    /// flat fills.
+    private var sendTint: Color {
+        if model.isRunning { return .secondary }
+        return draft.trimmed.isEmpty ? Color.secondary.opacity(0.4) : .accentColor
+    }
+
+    private func submit() {
+        let prompt = draft.trimmed
+        guard !prompt.isEmpty, !model.isRunning else { return }
+        model.send(prompt)
+        draft = ""
+        composerFocused = true
+    }
+}
+
+extension String {
+    var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
+}
+
+// MARK: - Empty state
+
+/// Shown before the first turn.
+///
+/// The suggestions are not decoration: two of the three need tools that do not
+/// exist until Phase 1, so tapping one shows what the agent does when it
+/// cannot check — which is the honest behaviour worth seeing early.
+private struct EmptyStateView: View {
+    let onPick: (String) -> Void
+
+    private static let suggestions = [
+        "用三句话介绍你能帮我做什么。",
+        "我这周六上午有空吗？",
+        "帮我在城西找个独立书店，算一下过去要多久。",
+    ]
 
     var body: some View {
-        Form {
-            Section("请求") {
-                TextField("想让 PAgent 做什么", text: $prompt, axis: .vertical)
-                    .lineLimit(2...5)
-                    .disabled(model.isRunning)
+        VStack(spacing: 20) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 34))
+                .foregroundStyle(.tint)
 
-                Button(model.isRunning ? "正在生成…" : "发送") {
-                    model.run(prompt: prompt)
-                }
-                .disabled(model.isRunning || prompt.isEmpty)
+            VStack(spacing: 6) {
+                Text("今天想安排点什么？")
+                    .font(.title3.weight(.semibold))
+                Text("PAgent 只会给出提案，写入日历需要你逐项确认。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
             }
 
-            if let failure = model.failure {
-                Section("失败") {
-                    Text(failure.title).font(.subheadline.weight(.semibold))
-                    Text(failure.detail)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    if failure.isRetryable {
-                        // Only offered when retrying could actually work. A
-                        // planning request costs real money (§4.3), so the
-                        // transport never retries on its own — see
-                        // `ProxyTransportError.isTransient`.
-                        Button("重试") { model.run(prompt: prompt) }
+            VStack(spacing: 8) {
+                ForEach(Self.suggestions, id: \.self) { suggestion in
+                    Button { onPick(suggestion) } label: {
+                        Text(suggestion)
+                            .font(.callout)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .fill(.quaternary.opacity(0.4))
+                            )
                     }
+                    .buttonStyle(.plain)
                 }
             }
-
-            if !model.thinking.isEmpty {
-                Section("思考过程") {
-                    // Arrives only because the request sets
-                    // `display: "summarized"`. The API default is `omitted`,
-                    // which renders as a long blank pause (§7.3).
-                    Text(model.thinking)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            if !model.answer.isEmpty {
-                Section("回答") {
-                    Text(model.answer)
-                }
-            }
-
-            if let usage = model.usage {
-                Section("用量") {
-                    LabeledContent("输入", value: "\(usage.inputTokens)")
-                    LabeledContent("输出", value: "\(usage.outputTokens)")
-                    // Always 0 on DeepSeek's compat endpoint — there is no
-                    // explicit write step to report (docs/DEEPSEEK.md).
-                    LabeledContent("缓存写入", value: "\(usage.cacheCreationInputTokens)")
-                    LabeledContent("缓存读取") {
-                        // The R8 signal. Zero across repeated identical
-                        // requests means the cache is silently broken.
-                        Text("\(usage.cacheReadInputTokens)")
-                            .foregroundStyle(usage.cacheHit ? .green : .secondary)
-                    }
-                    if !usage.cacheHit {
-                        Text("本次未命中缓存。缓存构建需要几秒，第二次相同请求应当命中；若始终为 0，说明稳定前缀的字节在两次请求之间变了（R8）。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-
-            Section {
-                NavigationLink("我发出去了什么") {
-                    OutboundDisclosureView(lastRequestBody: model.lastRequestBody)
-                }
-            }
+            .frame(maxWidth: 420)
         }
-        .navigationTitle("PAgent")
+        .frame(maxWidth: .infinity)
     }
 }
 
-// MARK: - Model
+// MARK: - One turn
 
-@Observable
-@MainActor
-final class PlannerModel {
-    struct Failure {
-        let title: String
-        let detail: String
-        let isRetryable: Bool
-    }
+private struct TurnView: View {
+    let turn: ConversationTurn
+    let onRetry: () -> Void
 
-    private(set) var isRunning = false
-    private(set) var thinking = ""
-    private(set) var answer = ""
-    private(set) var usage: Usage?
-    private(set) var failure: Failure?
-    /// Kept so the disclosure screen can show the exact bytes that were sent.
-    private(set) var lastRequestBody: String?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            PromptBubble(text: turn.prompt)
 
-    private var task: Task<Void, Never>?
+            if turn.isEmpty && turn.status.isStreaming {
+                WorkingIndicator()
+            }
 
-    /// A placeholder card.
-    ///
-    /// §10 Phase 0's acceptance explicitly excludes personal data, so this is
-    /// a literal rather than a generated card. DeepSeek publishes no minimum
-    /// cacheable length, so even this short prefix can cache — but the first
-    /// request still misses, because caching takes seconds to build.
-    private static let placeholderCard = ProfileCard(
-        markdown: "## 画像\n（Phase 0 占位，不含个人数据。）",
-        tokenCount: 20,
-        includedSlugs: [],
-        omittedSlugs: []
-    )
-
-    func run(prompt: String) {
-        task?.cancel()
-        thinking = ""
-        answer = ""
-        usage = nil
-        failure = nil
-        isRunning = true
-
-        task = Task { [weak self] in
-            await self?.perform(prompt: prompt)
-        }
-    }
-
-    private func perform(prompt: String) async {
-        defer { isRunning = false }
-
-        guard let baseURL = ProxyConfiguration.baseURL else {
-            failure = Failure(
-                title: "尚未配置代理地址",
-                detail: "请在 Info.plist 中设置 PAgentProxyBaseURL。",
-                isRetryable: false
-            )
-            return
-        }
-
-        let request: MessagesRequest
-        do {
-            request = try MessagesRequest(
-                model: .flash,
-                maxTokens: 8_000,
-                stream: true,
-                thinking: .enabled(display: .summarized),
-                outputConfig: OutputConfig(effort: .low),
-                prefix: PAgentPrompt.prefix(card: Self.placeholderCard),
-                messages: [
-                    .user([
-                        // Time goes in the user turn, never the system prompt
-                        // (R8). `currentTimeBlock` is the sanctioned route.
-                        currentTimeBlock(at: .now, timeZone: .current),
-                        .text(prompt),
-                    ])
-                ]
-            )
-            lastRequestBody = String(decoding: try request.encoded(), as: UTF8.self)
-        } catch {
-            failure = Failure(
-                title: "请求构造失败",
-                detail: String(describing: error),
-                isRetryable: false
-            )
-            return
-        }
-
-        let provider = AppAttestTokenProvider(baseURL: baseURL)
-        let loop = AgentLoop(
-            transport: ProxyTransport(
-                baseURL: baseURL,
-                tokenProvider: await provider.tokenProvider()
-            ),
-            executor: UnavailableToolExecutor()
-        )
-
-        do {
-            _ = try await loop.run(request) { [weak self] activity in
-                Task { @MainActor [weak self] in
-                    self?.apply(activity)
+            ForEach(turn.segments) { segment in
+                switch segment {
+                case .thinking(let block): ThinkingView(block: block)
+                case .text(let block): AnswerView(block: block)
+                case .tool(let call): ToolCallView(call: call)
                 }
             }
-        } catch {
-            failure = Self.describe(error)
-        }
-    }
 
-    private func apply(_ activity: AgentActivity) {
-        switch activity {
-        case .thinking(let delta):
-            thinking += delta
-        case .text(let delta):
-            answer += delta
-        case .roundCompleted(_, let roundUsage):
-            usage = roundUsage
-        case .callingTool, .toolFinished:
-            break
-        }
-    }
+            if let failure = turn.failure {
+                FailureView(failure: failure, onRetry: onRetry)
+            }
 
-    /// Turns a typed error into something worth reading.
-    ///
-    /// The distinctions matter to the user: "out of requests this month" and
-    /// "the service is busy" need different reactions, and the proxy's
-    /// `x-pagent-error-source` header is what separates them (§4.2).
-    private static func describe(_ error: any Error) -> Failure {
-        if let transport = error as? ProxyTransportError {
-            switch transport {
-            case .unauthenticated(let message):
-                return Failure(
-                    title: "设备认证失败",
-                    detail: "\(message)\n需要重新注册设备。",
-                    isRetryable: false
-                )
-            case .quotaExhausted(let message, _):
-                return Failure(
-                    title: "本月额度已用完",
-                    detail: message,
-                    isRetryable: false
-                )
-            case .rateLimited(let message, let retryAfter):
-                let wait = retryAfter.map { " 约 \(Int($0)) 秒后可重试。" } ?? ""
-                return Failure(title: "服务繁忙", detail: message + wait, isRetryable: true)
-            case .invalidRequest(let message):
-                return Failure(title: "请求被拒绝", detail: message, isRetryable: false)
-            case .http(let status, _, let message, let source):
-                return Failure(
-                    title: "HTTP \(status)（\(source.rawValue)）",
-                    detail: message,
-                    isRetryable: transport.isTransient
-                )
-            case .transport(let message):
-                return Failure(title: "网络不可用", detail: message, isRetryable: true)
-            case .malformedResponse(let message):
-                return Failure(title: "响应无法解析", detail: message, isRetryable: false)
+            if let usage = turn.usage {
+                UsageFooter(usage: usage)
             }
         }
+    }
+}
 
-        if let loop = error as? AgentLoopError {
-            switch loop {
-            case .refused:
-                // HTTP 200 with an empty content array (§7.3). Not a bug.
-                return Failure(
-                    title: "模型拒绝了这次请求",
-                    detail: "换一种问法试试。",
-                    isRetryable: false
+private struct PromptBubble: View {
+    let text: String
+
+    var body: some View {
+        HStack {
+            Spacer(minLength: 48)
+            Text(text)
+                .textSelection(.enabled)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(Color.accentColor.opacity(0.12))
                 )
-            case .outputTruncated:
-                return Failure(
-                    title: "回答被截断",
-                    detail: "输出超出了 max_tokens。",
-                    isRetryable: true
-                )
-            case .contextWindowExceeded:
-                return Failure(
-                    title: "上下文超出窗口",
-                    detail: "对话过长，需要重新开始。",
-                    isRetryable: false
-                )
-            case .roundLimitReached(let limit):
-                return Failure(
-                    title: "工具调用轮次过多",
-                    detail: "已达到 \(limit) 轮上限。",
-                    isRetryable: false
-                )
-            case .unknownTool(let name):
-                return Failure(title: "未知工具", detail: name, isRetryable: false)
+        }
+    }
+}
+
+/// The gap between sending and the first delta.
+///
+/// §7.4 is explicit that perceived latency is what matters: a multi-round turn
+/// takes real seconds, and an unmarked blank space reads as a hang.
+private struct WorkingIndicator: View {
+    @State private var pulse = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(.tint)
+                .frame(width: 7, height: 7)
+                .opacity(pulse ? 0.25 : 1)
+                .animation(.easeInOut(duration: 0.65).repeatForever(), value: pulse)
+            Text("思考中…")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .onAppear { pulse = true }
+    }
+}
+
+/// Summarised reasoning, collapsible.
+///
+/// Arrives only because the request sets `display: "summarized"` — the API
+/// default is `omitted`, which renders as a long blank pause (§7.3).
+private struct ThinkingView: View {
+    @Bindable var block: ConversationTurn.ThinkingBlock
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { block.isExpanded.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .rotationEffect(.degrees(block.isExpanded ? 90 : 0))
+                    Text("思考过程")
+                        .font(.caption.weight(.medium))
+                }
+                .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+
+            if block.isExpanded {
+                Text(block.text)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .padding(.leading, 14)
+                    .overlay(alignment: .leading) {
+                        Rectangle().fill(.quaternary).frame(width: 2)
+                    }
+            } else if let summary = block.summary {
+                // A collapsed block still says something. A bare "思考过程"
+                // row carries no information at all, and a turn can hold
+                // several of them — one before each tool call.
+                Text(summary)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .padding(.leading, 14)
             }
         }
+    }
+}
 
-        return Failure(
-            title: "出错了",
-            detail: error.localizedDescription,
-            isRetryable: false
+private struct AnswerView: View {
+    @Bindable var block: ConversationTurn.TextBlock
+
+    var body: some View {
+        Text(block.text)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// One tool invocation.
+///
+/// Shown even when it fails — especially when it fails. In Phase 0 every tool
+/// is unavailable, and seeing the model route around that is the point.
+private struct ToolCallView: View {
+    @Bindable var call: ConversationTurn.ToolCall
+
+    var body: some View {
+        HStack(spacing: 8) {
+            icon
+            Text(call.name)
+                .font(.system(.caption, design: .monospaced))
+            if call.failed {
+                // In Phase 0 every tool is unavailable by design, so a bare
+                // orange icon would read as a bug. Say which it is.
+                Text("本阶段不可用")
+                    .font(.caption2)
+            }
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(call.failed ? .orange : .secondary)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(.quaternary.opacity(0.3))
+        )
+    }
+
+    @ViewBuilder private var icon: some View {
+        if !call.finished {
+            ProgressView().controlSize(.mini)
+        } else {
+            Image(systemName: call.failed ? "exclamationmark.triangle.fill" : "checkmark")
+                .font(.caption2.weight(.bold))
+        }
+    }
+}
+
+private struct FailureView: View {
+    let failure: ConversationTurn.Failure
+    let onRetry: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(failure.title, systemImage: "exclamationmark.circle.fill")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.orange)
+            Text(failure.detail)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+            if failure.isRetryable {
+                // Only offered when retrying could actually work. A planning
+                // request costs real money (§4.3), so the transport never
+                // retries on its own — see `ProxyTransportError.isTransient`.
+                Button("重试", action: onRetry)
+                    .controlSize(.small)
+                    .padding(.top, 2)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(.orange.opacity(0.08))
         )
     }
 }
 
-/// Reports every tool as unavailable.
+/// Token counts for one turn.
 ///
-/// Phase 0 has no EventKit or MapKit integration — that is Phase 1 (§10). The
-/// honest behaviour is to tell the model so, rather than to return invented
-/// data: a fabricated free slot would produce a plausible-looking plan built
-/// on nothing, which is worse than a model that says it cannot check the
-/// calendar yet.
-///
-/// Throwing (rather than returning text) is what routes this through
-/// ``PAgentCore/AgentLoop``'s failed-tool path, which returns a `tool_result`
-/// with `is_error: true`. Dropping the result instead would leave a `tool_use`
-/// unanswered and the API would reject the next request (§7.3).
-struct UnavailableToolExecutor: ToolExecuting {
-    struct NotImplemented: LocalizedError {
-        let tool: String
-        var errorDescription: String? {
-            "`\(tool)` is not available in this build: the device-side "
-                + "integration lands in Phase 1. Answer without it, and say so."
+/// `cache_read` is the reason this is on screen at all: it is the only
+/// observable R8 signal, and a silent cache failure costs 30× on input
+/// without producing a single error.
+private struct UsageFooter: View {
+    let usage: Usage
+
+    var body: some View {
+        HStack(spacing: 14) {
+            metric("arrow.up", "\(usage.inputTokens)", .secondary)
+            metric("arrow.down", "\(usage.outputTokens)", .secondary)
+            metric(
+                "bolt.fill",
+                "\(usage.cacheReadInputTokens)",
+                usage.cacheHit ? .green : .secondary
+            )
+            if !usage.cacheHit {
+                Text("未命中缓存")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .help("缓存构建需要几秒，第二次相同请求应当命中；若始终为 0，说明稳定前缀的字节在两次请求之间变了（R8）。")
+            }
+            Spacer(minLength: 0)
         }
+        .font(.caption2)
     }
 
-    func execute(name: String, input: JSONValue) async throws -> String {
-        throw NotImplemented(tool: name)
+    private func metric(
+        _ symbol: String, _ value: String, _ tint: some ShapeStyle
+    ) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: symbol).font(.system(size: 8, weight: .bold))
+            Text(value).monospacedDigit()
+        }
+        .foregroundStyle(tint)
     }
 }
 
@@ -337,34 +502,53 @@ struct UnavailableToolExecutor: ToolExecuting {
 /// Shows the real request body, not a summary of it. The claim in §1 is that
 /// only a ≤500-token card leaves the device; a screen that paraphrased the
 /// payload would be asking the user to take that on trust.
-private struct OutboundDisclosureView: View {
-    let lastRequestBody: String?
+struct OutboundDisclosureView: View {
+    let requestBody: String?
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        Form {
-            Section("说明") {
-                Text(
-                    """
-                    复杂规划会把一张不超过 500 token 的画像卡发送至 Anthropic 处理。\
-                    你的日历、位置、照片等原始数据不会离开这台设备。
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(
+                        """
+                        复杂规划会把一张不超过 500 token 的画像卡发送至模型处理。\
+                        你的日历、位置、照片等原始数据不会离开这台设备。
 
-                    下面是上一次请求的完整内容——不是摘要，而是实际发出的字节。
-                    """
-                )
-                .font(.footnote)
+                        下面是上一次请求的完整内容——不是摘要，而是实际发出的字节。
+                        """
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                    if let requestBody {
+                        Text(requestBody)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(.quaternary.opacity(0.3))
+                            )
+                    } else {
+                        Text("还没有发出过任何请求。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(20)
             }
-
-            Section("上一次请求") {
-                if let lastRequestBody {
-                    Text(lastRequestBody)
-                        .font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled)
-                } else {
-                    Text("还没有发出过任何请求。")
-                        .foregroundStyle(.secondary)
+            .navigationTitle("我发出去了什么")
+            #if os(iOS)
+                .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("完成") { dismiss() }
                 }
             }
         }
-        .navigationTitle("我发出去了什么")
+        .frame(minWidth: 520, minHeight: 480)
     }
 }

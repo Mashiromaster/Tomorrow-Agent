@@ -22,3 +22,6 @@ node_modules/
 
 # macOS
 .DS_Store
+
+# Built by tools/make-app.sh, not source.
+tools/PAgent Preview.app/
