@@ -39,7 +39,22 @@ public final class InterestTag {
     /// ``PAgentCore/rankedForProfileCard(_:limit:)`` drops it rather than
     /// ranking it last — so a vetoed tag is structurally unable to reach the
     /// profile card, the only payload that leaves the device.
-    public var userVerdict: UserVerdict
+    /// `UserVerdict.rawValue` — the stored column. See
+    /// ``SignalEvent/sourceRaw`` for why the enum itself cannot be stored.
+    ///
+    /// This one carries the §5.2 veto, so the fallback matters: an
+    /// unrecognised value reads as `.rejected`, not `.unreviewed`. If a row
+    /// written by a newer build becomes unintelligible, the tag must stay
+    /// *out* of the profile card. Failing the other way would send a tag the
+    /// user may have vetoed off the device.
+    public var userVerdictRaw: String
+
+    /// Typed accessor over ``userVerdictRaw``. Computed — predicates query
+    /// `userVerdictRaw`.
+    public var userVerdict: UserVerdict {
+        get { UserVerdict(rawValue: userVerdictRaw) ?? .rejected }
+        set { userVerdictRaw = newValue.rawValue }
+    }
 
     /// Why this tag exists, for the §5.2 traceability UI.
     ///
@@ -60,7 +75,7 @@ public final class InterestTag {
         self.displayName = displayName
         self.score = score
         self.lastReinforcedAt = lastReinforcedAt
-        self.userVerdict = userVerdict
+        self.userVerdictRaw = userVerdict.rawValue
         self.evidence = evidence
     }
 }
@@ -170,9 +185,9 @@ extension InterestTag {
         // becomes a key path on the metatype ("key path cannot refer to enum
         // case"). A captured constant arrives as a plain value, which is the
         // same shape `fromSource(_:)` gets from its parameter.
-        let rejected = UserVerdict.rejected
+        let rejected = UserVerdict.rejected.rawValue
         var descriptor = FetchDescriptor<InterestTag>(
-            predicate: #Predicate { $0.userVerdict != rejected && $0.score > 0 },
+            predicate: #Predicate { $0.userVerdictRaw != rejected && $0.score > 0 },
             sortBy: [
                 SortDescriptor(\.score, order: .reverse),
                 // Ties broken by slug so the card — and the cached prefix it
@@ -197,9 +212,9 @@ extension InterestTag {
 
     /// Tags the user has not yet ruled on, for the review UI.
     public static func awaitingReview() -> FetchDescriptor<InterestTag> {
-        let unreviewed = UserVerdict.unreviewed
+        let unreviewed = UserVerdict.unreviewed.rawValue
         return FetchDescriptor<InterestTag>(
-            predicate: #Predicate { $0.userVerdict == unreviewed },
+            predicate: #Predicate { $0.userVerdictRaw == unreviewed },
             sortBy: [SortDescriptor(\.score, order: .reverse)]
         )
     }

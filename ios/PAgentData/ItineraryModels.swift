@@ -18,10 +18,9 @@ import PAgentCore
 /// where they are testable; this type is the persisted projection.
 @Model
 public final class ItineraryProposal {
-    /// Only `createdAt`. `status` is a `Codable` enum, which SwiftData
-    /// persists as a composite attribute — and CoreData cannot build an index
-    /// element over one. See the longer note on `SignalEvent`'s `#Index`.
-    #Index<ItineraryProposal>([\.createdAt])
+    /// The status index is over `statusRaw` — see `SignalEvent.sourceRaw`
+    /// for why a `Codable` enum cannot be the stored column.
+    #Index<ItineraryProposal>([\.createdAt], [\.statusRaw])
 
     @Attribute(.unique) public var id: UUID
 
@@ -30,7 +29,20 @@ public final class ItineraryProposal {
     /// What the user asked for, in their words. Shown in the history list.
     public var requestSummary: String
 
-    public var status: ProposalStatus
+    /// `ProposalStatus.rawValue` — the stored column. See
+    /// ``SignalEvent/sourceRaw``.
+    public var statusRaw: String
+
+    /// Typed accessor over ``statusRaw``. Computed, so predicates must query
+    /// `statusRaw` instead.
+    ///
+    /// An unrecognised value reads as `.draft`: the most conservative case,
+    /// since §3.4 makes `.draft` the one state from which nothing has been
+    /// written to the calendar.
+    public var status: ProposalStatus {
+        get { ProposalStatus(rawValue: statusRaw) ?? .draft }
+        set { statusRaw = newValue.rawValue }
+    }
 
     /// Which model produced this — e.g. `deepseek-v4-pro`, or
     /// `foundation-models-on-device`.
@@ -72,7 +84,7 @@ public final class ItineraryProposal {
         self.id = id
         self.createdAt = createdAt
         self.requestSummary = requestSummary
-        self.status = status
+        self.statusRaw = status.rawValue
         self.modelUsed = modelUsed
         self.routingRationale = routingRationale
         self.items = items
@@ -149,22 +161,23 @@ public final class ItineraryItem {
 extension ItineraryProposal {
     /// Proposals the user still has to decide on.
     public static func awaitingDecision() -> FetchDescriptor<ItineraryProposal> {
-        // Captured constants rather than `.draft` / `.presented` inline — see
-        // the note on `InterestTag.forProfileCard()` for what `#Predicate`
-        // does to an enum case named inside the closure.
-        let draft = ProposalStatus.draft
-        let presented = ProposalStatus.presented
+        // Raw values, not enum cases: `#Predicate` cannot lower a comparison
+        // against a `Codable` enum at all on Xcode 26.6 (see
+        // `SignalEvent.sourceRaw`), and a captured constant does not help —
+        // the unsupported type is the *value's*, not the expression's.
+        let draft = ProposalStatus.draft.rawValue
+        let presented = ProposalStatus.presented.rawValue
         return FetchDescriptor<ItineraryProposal>(
-            predicate: #Predicate { $0.status == draft || $0.status == presented },
+            predicate: #Predicate { $0.statusRaw == draft || $0.statusRaw == presented },
             sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
         )
     }
 
     /// Committed proposals, newest first — the undo surface.
     public static func committed() -> FetchDescriptor<ItineraryProposal> {
-        let committed = ProposalStatus.committed
+        let committed = ProposalStatus.committed.rawValue
         return FetchDescriptor<ItineraryProposal>(
-            predicate: #Predicate { $0.status == committed },
+            predicate: #Predicate { $0.statusRaw == committed },
             sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
         )
     }
