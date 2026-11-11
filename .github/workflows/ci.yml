@@ -29,7 +29,7 @@ jobs:
     name: Swift — core + ios
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Pick the newest Xcode the image has, rather than the floating
       # `Xcode.app` symlink — an image bump moves that symlink, and a macro
@@ -55,8 +55,13 @@ jobs:
           swift --version
           xcodebuild -showsdks | grep -i iphoneos
 
+      # The `actions/*` steps are pinned to major tags rather than SHAs:
+      # these are first-party repos where the major tag is the documented
+      # upgrade surface. Bumped off v4 on 2026-11-11 — v4 declares Node 20,
+      # which the runners now force onto Node 24 regardless, and running on
+      # the runtime an action actually targets beats being migrated silently.
       - name: Cache SwiftPM
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             core/.build
@@ -116,9 +121,9 @@ jobs:
     name: Proxy and scripts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
