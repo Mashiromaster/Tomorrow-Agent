@@ -120,9 +120,43 @@ function mintDeviceToken(secret, keyID, tier = 'pro', ttlSeconds = 900) {
   return `${signingInput}.${signature}`
 }
 
-/** Reads `JWT_SIGNING_KEY` from the environment, falling back to `.dev.vars`. */
-function signingKey() {
+/** True for a `wrangler dev` origin — anything on localhost. */
+function isLocal(target) {
+  try {
+    const { hostname } = new URL(target)
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Resolves the signing key for `target`.
+ *
+ * `.dev.vars` is only consulted for a local target. A deployed proxy has its
+ * own `JWT_SIGNING_KEY`, set with `wrangler secret put` and unreadable
+ * afterwards — and the two are not required to match. Falling back to the
+ * local file against a remote target would mint a token signed with the wrong
+ * key and surface as a bare 401, which reads like a proxy bug rather than a
+ * configuration mistake. So: demand the variable explicitly instead.
+ */
+function signingKey(target) {
   if (process.env.JWT_SIGNING_KEY) return process.env.JWT_SIGNING_KEY
+
+  if (!isLocal(target)) {
+    fail(
+      `JWT_SIGNING_KEY is not set, and ${target} is not a local wrangler dev.\n` +
+        '  A deployed proxy has its own signing secret; proxy/.dev.vars holds the\n' +
+        '  local one and the two need not match. Pass the deployment\'s key:\n\n' +
+        '    JWT_SIGNING_KEY=\'<the deployed value>\' \\\n' +
+        `      node scripts/verify-cache.mjs --target ${target}\n\n` +
+        '  `wrangler secret put` is write-only, so if that value was not kept,\n' +
+        '  set a fresh one and use it here:\n\n' +
+        '    KEY=$(openssl rand -base64 48)\n' +
+        '    printf %s "$KEY" | npx wrangler secret put JWT_SIGNING_KEY\n' +
+        `    JWT_SIGNING_KEY="$KEY" node scripts/verify-cache.mjs --target ${target}`
+    )
+  }
 
   const devVars = path.join(proxyRoot, '.dev.vars')
   if (!existsSync(devVars)) {
@@ -259,7 +293,7 @@ async function check(target, token, model) {
 // ── Main ────────────────────────────────────────────────────────────────────
 
 const options = parseArguments(process.argv.slice(2))
-const token = mintDeviceToken(signingKey(), 'verify-cache-local')
+const token = mintDeviceToken(signingKey(options.target), 'verify-cache-local')
 
 console.log(`target: ${options.target}`)
 
