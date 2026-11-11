@@ -95,6 +95,31 @@ if (( ${#MISSING_CONFIG[@]} )); then
   warn "Deploying anyway — the /v1/messages path still works for cache verification."
 fi
 
+# The one that blocks the product rather than inconveniencing the developer.
+#
+# `*.workers.dev` is DNS-poisoned from mainland China, and that hostname is
+# what the iOS app connects to. A VPN fixes it for whoever is deploying and
+# does nothing for a user. See the note in wrangler.jsonc.
+custom_domain() {
+  python3 -c "
+import re, sys
+lines = [l for l in open('wrangler.jsonc') if not l.lstrip().startswith('//')]
+match = re.search(r'\"pattern\"\s*:\s*\"([^\"]+)\"', ''.join(lines))
+print(match.group(1) if match else '')
+"
+}
+
+CUSTOM_DOMAIN="$(custom_domain)"
+
+if [[ -z "$CUSTOM_DOMAIN" ]]; then
+  warn "no custom domain configured — the Worker will only be reachable at"
+  warn "  <name>.workers.dev, which is DNS-poisoned from mainland China."
+  warn "  Fine for cache verification and development; NOT shippable."
+  warn "  Uncomment the \"routes\" block in wrangler.jsonc once a zone exists."
+else
+  ok "custom domain: $CUSTOM_DOMAIN"
+fi
+
 # The one that is a security problem rather than a convenience problem.
 if grep -q '"APP_ATTEST_ENV": "development"' wrangler.jsonc; then
   warn "APP_ATTEST_ENV is \"development\" — accepts debug-build attestations."
@@ -268,7 +293,13 @@ fi
 
 # ── Next step ───────────────────────────────────────────────────────────────
 
-WORKER_URL="$(npx wrangler deployments list 2>/dev/null | grep -oE 'https://[^ ]+\.workers\.dev' | head -1 || true)"
+# Prefer the custom domain: it is the hostname the app will actually use, so
+# verifying against workers.dev would test a path that no device takes.
+if [[ -n "$CUSTOM_DOMAIN" ]]; then
+  WORKER_URL="https://${CUSTOM_DOMAIN}"
+else
+  WORKER_URL="$(npx wrangler deployments list 2>/dev/null | grep -oE 'https://[^ ]+\.workers\.dev' | head -1 || true)"
+fi
 
 say "Next"
 printf '  Verify caching against the live API (R8):\n\n'

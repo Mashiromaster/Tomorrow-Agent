@@ -1,5 +1,7 @@
 # PAgent
 
+*auto plan your tomorrow*
+
 A resident personal agent for iOS. It builds an explainable picture of your
 interests and rhythm from the system data you authorise, plans concrete
 itineraries around your real constraints, and — only after you confirm —

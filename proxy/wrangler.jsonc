@@ -17,6 +17,28 @@
     { "binding": "QUOTA", "id": "REPLACE_WITH_KV_ID", "preview_id": "REPLACE_WITH_KV_PREVIEW_ID" }
   ],
 
+  // ── Custom domain ──────────────────────────────────────────────────────
+  //
+  // **Not optional for this project.** The default `*.workers.dev` hostname is
+  // DNS-poisoned from mainland China: it resolves to three different addresses
+  // across resolvers (174.37.243.85, 185.60.216.50, 168.143.171.93), none of
+  // them in Cloudflare's published ranges, while `cloudflare.com` itself
+  // resolves correctly to 104.16.x. So the poisoning targets the hostname, not
+  // Cloudflare as a whole — and a custom domain on Cloudflare's own edge IPs
+  // is the documented way around it.
+  //
+  // This matters because `*.workers.dev` is what the *iOS app* would connect
+  // to. A developer can work around it with a VPN; a user cannot. Leaving it
+  // unset would mean shipping a product that fails for its intended audience,
+  // discovered at device-test time rather than now.
+  //
+  // To enable: add the zone to Cloudflare (NS delegation), then uncomment and
+  // set the hostname. `scripts/deploy.sh` reads it and reminds you if unset.
+  //
+  // "routes": [
+  //   { "pattern": "pagent-proxy.example.com", "custom_domain": true }
+  // ],
+
   "vars": {
     "APPLE_TEAM_ID": "REPLACE_TEAM_ID",
     "APP_BUNDLE_ID": "com.example.PAgent",

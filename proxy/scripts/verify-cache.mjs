@@ -29,15 +29,26 @@
  *
  * ## Usage
  *
+ * **No Cloudflare account needed.** `wrangler dev --local` runs the real
+ * workerd engine with in-memory KV, so this verifies the full path —
+ * device token, quota, byte-exact passthrough, live DeepSeek caching —
+ * with nothing but a DeepSeek API key. That matters here because deploying
+ * is currently blocked on network access to Cloudflare while the API key
+ * is not.
+ *
  *     cd proxy
  *     cp .dev.vars.example .dev.vars    # then fill in DEEPSEEK_API_KEY
- *     npx wrangler dev                  # in another terminal
+ *     npx wrangler dev --local          # in another terminal
  *     node scripts/verify-cache.mjs                      # both models
  *     node scripts/verify-cache.mjs --model deepseek-v4-pro
- *     node scripts/verify-cache.mjs --target https://pagent-proxy.example.workers.dev
  *
- * Against a deployed proxy, `JWT_SIGNING_KEY` must match that deployment's
- * secret. Against `wrangler dev` it comes from `.dev.vars`.
+ * Against a deployed proxy, point it at the custom domain — not the
+ * workers.dev hostname, which is the path no device takes:
+ *
+ *     node scripts/verify-cache.mjs --target https://proxy.example.com
+ *
+ * `JWT_SIGNING_KEY` must match that deployment's secret. Against
+ * `wrangler dev` it comes from `.dev.vars`.
  */
 
 import { createHmac } from 'node:crypto'
