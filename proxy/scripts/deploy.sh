@@ -135,20 +135,27 @@ say "KV namespaces"
 # existing namespace rather than failing is what makes this re-runnable.
 existing_namespaces="$(npx wrangler kv namespace list 2>/dev/null || echo '[]')"
 
+# Matches on **any** of the titles wrangler has used for a binding.
+#
+# `wrangler kv namespace create DEVICES` titles the namespace `DEVICES` in
+# 4.159, not `<worker-name>-DEVICES` as this script originally assumed. The
+# mismatch made the second run try to create a namespace that already existed
+# and abort — "idempotent" was a claim, not a tested property, until a real
+# redeploy proved otherwise. Accepting both spellings is what makes it true
+# regardless of which wrangler created the namespace.
 namespace_id_for() {
-  local title="$1"
-  printf '%s' "$existing_namespaces" | python3 -c "
+  printf '%s' "$existing_namespaces" | python3 -I -c "
 import json, sys
+wanted = set(sys.argv[1:])
 try:
     for ns in json.load(sys.stdin):
-        if ns.get('title') == sys.argv[1]:
+        if ns.get('title') in wanted:
             print(ns['id']); break
 except Exception:
     pass
-" "$title"
+" "$@"
 }
 
-# Wrangler titles a namespace "<worker-name>-<binding>".
 # Read the worker name without a full JSONC parse. A naive `//.*` strip
 # corrupts the file — `https://api.deepseek.com/anthropic` contains `//` — so
 # this matches the one key it needs.
@@ -171,7 +178,9 @@ resolve_namespace() {
   local binding="$1"
   local title="${WORKER_NAME}-${binding}"
   local id
-  id="$(namespace_id_for "$title")"
+  # Both spellings: the bare binding is what wrangler 4.159 writes, the
+  # prefixed one is what older versions wrote.
+  id="$(namespace_id_for "$binding" "$title")"
 
   if [[ -n "$id" ]]; then
     ok "$binding reusing existing namespace ($id)"

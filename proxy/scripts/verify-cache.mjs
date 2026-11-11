@@ -229,10 +229,22 @@ async function send(target, token, body) {
       body,
     })
   } catch (error) {
-    fail(
-      `could not reach ${target}: ${error.message}\n` +
-        '  Is `npx wrangler dev` running?'
-    )
+    // Two very different causes, so name both rather than guessing.
+    //
+    // `*.workers.dev` is DNS-poisoned from mainland China — it resolves to
+    // addresses outside Cloudflare's ranges while `cloudflare.com` resolves
+    // correctly. A system-wide VPN does not help here: Node does not read the
+    // macOS proxy settings that `curl` picks up from `scutil`, so it has to be
+    // told explicitly.
+    const hint = isLocal(target)
+      ? '  Is `npx wrangler dev --local` running?'
+      : '  If this is a *.workers.dev host, that name is DNS-poisoned from\n' +
+        '  mainland China and Node ignores the system proxy. Try:\n\n' +
+        '    NODE_USE_ENV_PROXY=1 HTTPS_PROXY=http://127.0.0.1:<port> \\\n' +
+        `      node scripts/verify-cache.mjs --target ${target}\n\n` +
+        '  Confirm the Worker itself is up first:\n' +
+        `    curl -x http://127.0.0.1:<port> ${target}/healthz`
+    fail(`could not reach ${target}: ${error.message}\n` + hint)
   }
 
   const text = await response.text()
