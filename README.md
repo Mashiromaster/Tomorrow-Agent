@@ -152,14 +152,33 @@ against the real API key. `deploy.sh` warns about this on every run.
 
 ### Verifying the cache (R8)
 
-```sh
-node scripts/verify-cache.mjs --target https://<your-worker>.workers.dev
-```
-
 Sends the same request twice — with different timestamps in the user turn — and
 reads `cache_read_input_tokens`. This is the one half of R8 no offline test can
 reach: a broken cache produces no error, just a silent 30× input cost on
 `deepseek-v4-pro`.
+
+Against a local worker, which needs no Cloudflare account:
+
+```sh
+npx wrangler dev --local          # one terminal
+node scripts/verify-cache.mjs     # another
+```
+
+Against the deployment, two things differ. The signing key is the deployed
+secret, not the one in `.dev.vars`, and `wrangler secret put` is write-only —
+so rotate it to a value you hold. And Node does not read the macOS system
+proxy, which `workers.dev` currently requires:
+
+```sh
+KEY=$(openssl rand -base64 48)
+printf %s "$KEY" | npx wrangler secret put JWT_SIGNING_KEY
+NODE_USE_ENV_PROXY=1 HTTPS_PROXY=http://127.0.0.1:<port> \
+JWT_SIGNING_KEY="$KEY" node scripts/verify-cache.mjs \
+  --target https://<your-worker>.workers.dev
+```
+
+The script detects both of those situations and prints the fix rather than
+failing with a bare 401 or `fetch failed`.
 
 ## Status
 
@@ -167,10 +186,19 @@ reach: a broken cache produces no error, just a silent 30× input cost on
 errors and zero warnings under Swift 6 strict concurrency, and CI gates all of
 it on every push.
 
-The Phase 0 acceptance criterion — a real device driving the full streaming
-round trip — is **not met**. It needs an Apple-Intelligence-capable device (App
-Attest returns `invalidKey` in the simulator), a deployed proxy, and a DeepSeek
-API key.
+**The proxy is deployed and R8 is verified live** against it — `deepseek-flash`
+reads 1664 cached tokens, `deepseek-v4-pro` 1792. The full agent loop has also
+been driven end to end from macOS with `swift run pagent-chat`: real transport,
+real streaming, real tool rounds.
+
+The Phase 0 acceptance criterion — a **real device** driving that round trip —
+is **not met**, and that is now the only thing blocking it. App Attest returns
+`invalidKey` off-device, which no amount of macOS testing can substitute for.
+
+Before a device test is worth running, the proxy needs a **custom domain**:
+`*.workers.dev` is DNS-poisoned from mainland China (measured, not assumed —
+`docs/PHASE0.md` has the resolver output), so an iPhone there cannot reach it
+and a failure would look like an App Attest bug.
 
 `docs/PHASE0.md` has the full verified/unverified split, the mutation-test
 results behind the R8 caching guarantees, the remaining blockers, and the

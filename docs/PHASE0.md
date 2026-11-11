@@ -21,12 +21,17 @@ Phase 0 lists four deliverables. **All four are done and tested.**
 simulator with zero errors and zero warnings under Swift 6 strict concurrency,
 and CI gates all of it on every push.
 
+**The proxy is deployed** at `pagent-proxy.mashiro0993.workers.dev`, and **R8
+is verified live** against it — see *R8* below.
+
 **Phase 0 acceptance** (真机跑通一次「本地构造 messages → 经代理 → 模型返回
-流式文本 → UI 渲染」，不含任何个人数据) is **not met**. Both ends of that chain
-are built and tested in isolation, `App/PlannerView.swift` is the screen that
-will run it, and `proxy/scripts/deploy.sh` provisions the backend — but the run
-itself needs a device, a deployed proxy, and a DeepSeek API key. See *Blocked*
-below.
+流式文本 → UI 渲染」，不含任何个人数据) is **not met**, and now has exactly one
+blocker left: a real device. The whole chain has been driven end to end from
+macOS — `swift run pagent-chat` runs the shipping `AgentLoop` through the
+shipping `ProxyTransport` against the live proxy, with real streaming, real
+tool rounds, and real cache hits. What a Mac cannot supply is App Attest
+(`DCAppAttestService` returns `invalidKey` off-device) and the EventKit/MapKit
+tools. See *Blocked* below.
 
 ### One correction to the plan
 
@@ -212,20 +217,33 @@ fires:
 
 Every file was restored and every suite re-run green afterwards.
 
-### What is still unverified
+### Verified live — 2026-11-11
 
-That a **live** request reports `cache_read_input_tokens > 0`. That needs a
-DeepSeek API key and a deployed proxy.
+`proxy/scripts/verify-cache.mjs` sends the same request twice — bodies emitted
+separately, so they carry different timestamps in the user turn — and reads
+`cache_read_input_tokens`. It sources its body from `swift run
+pagent-emit-request`, the **real** encoder, not a fixture; a fixture would keep
+passing while the actual request path broke the cache, which is precisely the
+failure R8 names.
 
-The check itself is written: `proxy/scripts/verify-cache.mjs` sends the same
-request twice — bodies emitted separately, so they carry different timestamps in
-the user turn — and reads the field. It sources its request body from
-`swift run pagent-emit-request`, the **real** encoder, rather than a fixture; a
-fixture would keep passing while the actual request path broke the cache, which
-is precisely the failure R8 names.
+Both locally (`wrangler dev --local`) and against the deployed Worker:
 
-It retries up to three times before reporting failure, because DeepSeek's cache
-is best-effort and construction takes seconds — a single zero is not a verdict.
+| Model | `cache_read_input_tokens` |
+|---|---|
+| `deepseek-flash` | 1664 |
+| `deepseek-v4-pro` | 1792 |
+
+Against the deployment both models hit on the **first** call, because the
+prefix bytes were byte-identical to the local run and DeepSeek's cache is
+shared across deployments. That is itself evidence the prefix is stable: a
+different machine, a different process, a different Worker, same bytes.
+
+The input token count tells the same story from the other side — `v4-pro` sent
+1797 uncached input tokens on a cold prefix and 5 on a warm one.
+
+The script retries up to three times before reporting failure, because
+DeepSeek's cache is best-effort and construction takes seconds — a single zero
+is not a verdict.
 
 What *is* verified offline: the proxy observes and logs the field when upstream
 sends it, `Usage.cacheHit` reads it correctly, and `PlannerView` puts it on
@@ -313,8 +331,10 @@ whenever a data source is switched on.
 |---|---|
 | **Apple-Intelligence device** (iPhone 15 Pro+) | App Attest (the simulator returns `invalidKey`) · on-device model behaviour — §2.1 notes the simulator differs from a real device · guardrail false-positive rate (R3) · nightly digest battery measurement (<2%, Phase 2 acceptance) |
 | **Apple Developer account** | Signing · the real `APPLE_TEAM_ID` / bundle ID / App Group · App Attest provisioning |
-| **Anthropic API key + a deployed proxy** | Live cache-hit verification · the Phase 0 end-to-end acceptance |
-| **A git repo** | CI, PR gating |
+| **A domain on Cloudflare** | Shipping, not development. `*.workers.dev` is DNS-poisoned from mainland China — measured on this deployment, not inferred: see *The hostname problem* below |
+
+Cleared since the first draft: a git repo (CI runs on every push), a DeepSeek
+API key, and a deployed proxy (R8 verified live against it).
 
 Note that `FoundationModels` imports fine, so the availability gating and the
 `contextSize` / `tokenCount(for:)` plumbing can be written now — only the
@@ -324,28 +344,62 @@ Note that `FoundationModels` imports fine, so the availability gating and the
 
 ## Next steps
 
-1. **Get a DeepSeek API key** from platform.deepseek.com, and
-   `npx wrangler login`.
-2. **Deploy the proxy.** `cd proxy && ./scripts/deploy.sh --dry-run`, then
-   without the flag. The script creates both KV namespaces, writes their ids
-   into `wrangler.jsonc`, and refuses to deploy if either secret is missing.
-   It is idempotent, so re-running it is the normal way to confirm a
-   deployment still matches the config.
-3. **Verify the cache.**
-   `node scripts/verify-cache.mjs --target https://<worker>.workers.dev`.
-   This is the one half of R8 no offline test reaches, and it is the first
-   thing that will confirm or refute the caching reasoning in `DEEPSEEK.md`.
-4. **Fill in the four configuration placeholders** once there is an Apple
+Steps 1–3 of the original list are done: the key exists, the proxy is
+deployed, and R8 is verified live. What remains:
+
+1. **Fill in the four configuration placeholders** once there is an Apple
    Developer account — `ios/README.md` has the table. The one that matters
    most: `APP_ATTEST_ENV` / `appattest-environment` must be `production` on
    *both* sides before shipping, or a debug build can mint tokens against the
    real API key. `deploy.sh` warns about this on every run.
-5. **Run the acceptance on a device.** `PlannerView` sends a placeholder card
+2. **Register a domain and uncomment `routes` in `wrangler.jsonc`.** Required
+   before a device test is meaningful, not just before shipping — see *The
+   hostname problem*.
+3. **Run the acceptance on a device.** `PlannerView` sends a placeholder card
    with no personal data, which is what §10 Phase 0 asks for. Send the same
    request twice and watch `cache_read_input_tokens` go green.
-6. **Then Phase 1.** EventKit, the three device-side tools, and the proposal
+4. **Then Phase 1.** EventKit, the three device-side tools, and the proposal
    UI. The tool *protocol* and the loop already exist; what is missing is the
-   EventKit and MapKit implementations behind `ToolExecuting`.
+   EventKit and MapKit implementations behind `ToolExecuting` — `pagent-chat`
+   already demonstrates what the loop does when they are absent.
+
+---
+
+## The hostname problem
+
+`*.workers.dev` does not resolve correctly from mainland China. Measured on
+this deployment rather than assumed:
+
+| Name | Resolves to | In Cloudflare's ranges |
+|---|---|---|
+| `pagent-proxy.mashiro0993.workers.dev` (local resolver) | `74.86.12.172` | no |
+| the same name via `8.8.8.8` | `199.59.149.244` | no |
+| `cloudflare.com` | `104.16.132.229` | yes |
+
+So the poisoning targets the hostname, not Cloudflare. The Worker itself was
+reachable the entire time — `curl -x <proxy> .../healthz` returned 200 in
+0.29s, and R8 verified through the same path.
+
+This matters because **a developer can work around it and a user cannot**. The
+iOS app connects to whatever `PAgentProxyBaseURL` says; if that is a
+`workers.dev` name, the app fails for its intended audience. A custom domain
+on Cloudflare's own edge IPs is the documented way around it, and
+`wrangler.jsonc` has the `routes` block ready to uncomment.
+
+One consequence worth stating plainly: **the device test cannot be run against
+`workers.dev` either**. An iPhone on a Chinese network will not reach it, and
+the result would be indistinguishable from a bug in App Attest.
+
+### Why Node needed a proxy variable and `curl` did not
+
+The first live run failed with a bare `fetch failed`. The cause was not the
+Worker: macOS `curl` reads the system proxy via `scutil`, and Node does not.
+A system-wide VPN therefore covers `curl`, `git` (only once configured —
+`http.https://github.com.proxy`), and the browser, while leaving Node to
+attempt a direct connection into the poisoned address.
+
+`verify-cache.mjs` now names both causes separately, because "cannot reach the
+proxy" and "the proxy is down" call for completely different next steps.
 
 ---
 

@@ -10,6 +10,24 @@
   // promise in IMPLEMENTATION.md §8/§9.
   "observability": { "enabled": true },
 
+  // Both default to true when absent, and wrangler warns about it on every
+  // deploy. Spelled out here because the defaults are wrong for this Worker.
+  //
+  // `preview_urls` gives **every uploaded version** its own public hostname.
+  // Each one carries the same DEEPSEEK_API_KEY and can spend money, and none
+  // of them appear at the address being watched. Quota is keyed on the device
+  // token's `sub` rather than on the hostname, so this is not a way around
+  // the limit — but it is a set of live entrances nobody is looking at, for
+  // a Worker whose only job is to hold one spendable credential.
+  //
+  // `workers_dev` stays on because it is currently the only way in. It is
+  // also DNS-poisoned from mainland China (measured: this Worker's hostname
+  // resolves to 74.86.12.172 / 199.59.149.244, neither in Cloudflare's
+  // ranges, while cloudflare.com resolves to 104.16.x). Turn it off once the
+  // custom domain below is live — the app must never depend on it.
+  "preview_urls": false,
+  "workers_dev": true,
+
   "kv_namespaces": [
     // Attested App Attest public keys, keyed by keyId. One record per device.
     { "binding": "DEVICES", "id": "4ff22931fbab49ca849686f88ad172ff", "preview_id": "REPLACE_WITH_KV_PREVIEW_ID" },
