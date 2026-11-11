@@ -55,5 +55,16 @@ let package = Package(
             dependencies: ["PAgentCore"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
+
+        // Drives a real agent turn from the command line against a running
+        // proxy. `AgentLoop` is protocol-injected, so this uses the shipping
+        // `ProxyTransport`; only App Attest and the EventKit/MapKit tools are
+        // substituted, and neither exists off-device anyway. The note at the
+        // top of its `main.swift` says what that does and does not prove.
+        .executableTarget(
+            name: "pagent-chat",
+            dependencies: ["PAgentCore", "PAgentNet"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
     ]
 )

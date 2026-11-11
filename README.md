@@ -72,6 +72,25 @@ swift build
 swift test
 ```
 
+#### Driving a real turn from the command line
+
+`AgentLoop` takes its transport and tool executor as protocols, so a macOS
+CLI can run the shipping path — real `ProxyTransport`, real SSE parse, real
+DeepSeek, real caching:
+
+```sh
+cd proxy && npx wrangler dev --local     # one terminal
+cd core  && swift run pagent-chat        # another
+swift run pagent-chat --model deepseek-v4-pro "周六上午排个行程"
+```
+
+Two things are substituted, and neither exists off-device anyway: the device
+token is signed with the deployment's own `JWT_SIGNING_KEY` instead of App
+Attest, and the EventKit/MapKit tools refuse every call — the same thing
+`UnavailableToolExecutor` does in the app until Phase 1. A turn that needs a
+tool therefore reports the refusal rather than inventing an answer, which
+exercises §7.3's failed-tool recovery.
+
 ### `ios/` — 30 schema tests, plus the app build
 
 ```sh
