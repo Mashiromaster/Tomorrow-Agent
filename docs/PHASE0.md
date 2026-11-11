@@ -252,6 +252,79 @@ than in a bill.
 
 ---
 
+## Verified against the deployment — 2026-11-11
+
+Beyond R8, three things were exercised on the live Worker that no offline test
+reaches. All three have unit tests in `proxy/test/`, which run under Miniflare
+— the real workerd engine — so this was never about runtime fidelity. It is
+about the parts that only exist once something is deployed: that the secret
+actually in place verifies the tokens, that KV writes survive, and that the
+guards sit where the deployed bundle puts them.
+
+### Every refusal happens before the upstream call
+
+`scripts/verify-guards.mjs`, run against both `wrangler dev --local` and the
+deployment, with identical results:
+
+| Case | |
+|---|---|
+| no `Authorization` header | 401 |
+| signed with the wrong key | 401 |
+| expired token | 401 |
+| unknown tier | 401 |
+| malformed token | 401 |
+| empty subject | 401 |
+| model not on the allowlist | 400 |
+| a different DeepSeek model | 400 |
+
+Each also carries `x-pagent-error-source: proxy`. That second half is the
+point: a guard that returned the right status *after* forwarding would have
+already spent the money it exists to protect.
+
+"signed with the wrong key" is the one that matters most — it is the whole
+barrier between a leaked proxy URL and a spendable API key.
+
+### The quota cuts off, and costs nothing to do so
+
+`consume()` runs before `forwardToUpstream()`, so an exhausted device never
+reaches DeepSeek. Confirmed by temporarily deploying with
+`FREE_MONTHLY_REQUESTS: "2"`:
+
+```
+#1  HTTP 200
+#2  HTTP 200
+#3  HTTP 429  source=proxy  retry-after=1681412s
+#4  HTTP 429  source=proxy  retry-after=1681412s
+```
+
+`retry-after` is ~19.5 days — the time to the next UTC month boundary. The
+limit was restored to 100 immediately afterwards.
+
+### The proxy does not log request bodies
+
+§8/§9 promise this, and the argument had been structural: `RequestMetrics` has
+no field that could hold a body, and `metrics.ts` is the only module calling
+`console.*`. Now tested directly — a request carrying a unique marker, with
+the marker searched for in the log line the proxy emitted:
+
+```json
+{"kind":"pagent.request","requestId":"6e9474b3-…","route":"/v1/messages",
+ "status":200,"latencyMs":120,"device":"1a68d0b3c2592b0f",
+ "model":"deepseek-flash","stream":false,"quotaUsed":1,"quotaLimit":100,
+ "usage":{"input_tokens":44,"output_tokens":58,…}}
+```
+
+Marker occurrences: 1 in the response, 0 in the logs. Note `device` is a hash,
+not the token's `sub`.
+
+This was run under `wrangler dev` rather than against the deployment, because
+`wrangler tail` captured nothing at all on the remote — and an empty capture
+cannot distinguish "nothing was logged" from "the tail never attached." The
+same bundle produces the same log line either way; the honest version of this
+claim is that it was verified locally, on the code that is deployed.
+
+---
+
 ## Structural security properties
 
 Three decisions from the document were implemented as structural guarantees

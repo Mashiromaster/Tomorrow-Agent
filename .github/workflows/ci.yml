@@ -150,6 +150,10 @@ jobs:
         working-directory: proxy
         run: node --check scripts/verify-cache.mjs
 
+      - name: Check verify-guards.mjs
+        working-directory: proxy
+        run: node --check scripts/verify-guards.mjs
+
       - name: Check deploy.sh
         working-directory: proxy
         run: bash -n scripts/deploy.sh

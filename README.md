@@ -180,6 +180,18 @@ JWT_SIGNING_KEY="$KEY" node scripts/verify-cache.mjs \
 The script detects both of those situations and prints the fix rather than
 failing with a bare 401 or `fetch failed`.
 
+### Verifying the guards
+
+```sh
+node scripts/verify-guards.mjs                    # local
+node scripts/verify-guards.mjs --quota            # also spends quota to prove cutoff
+```
+
+Eight refusal cases — missing, forged, expired and malformed tokens, unknown
+tiers, and models off the allowlist. Each must come back `4xx` **and**
+`x-pagent-error-source: proxy`: the status says it was refused, the header says
+it was refused *here*, before anything was spent upstream.
+
 ## Status
 
 **417 tests pass.** The three Xcode targets build for the simulator with zero
