@@ -12,9 +12,9 @@
 
   "kv_namespaces": [
     // Attested App Attest public keys, keyed by keyId. One record per device.
-    { "binding": "DEVICES", "id": "REPLACE_WITH_KV_ID", "preview_id": "REPLACE_WITH_KV_PREVIEW_ID" },
+    { "binding": "DEVICES", "id": "4ff22931fbab49ca849686f88ad172ff", "preview_id": "REPLACE_WITH_KV_PREVIEW_ID" },
     // Monthly request counters, keyed by device + month.
-    { "binding": "QUOTA", "id": "REPLACE_WITH_KV_ID", "preview_id": "REPLACE_WITH_KV_PREVIEW_ID" }
+    { "binding": "QUOTA", "id": "97a0cfbf1f3f46f783f5d8ed6b532fba", "preview_id": "REPLACE_WITH_KV_PREVIEW_ID" }
   ],
 
   // ── Custom domain ──────────────────────────────────────────────────────
