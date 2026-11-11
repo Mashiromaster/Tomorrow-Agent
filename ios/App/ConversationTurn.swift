@@ -160,4 +160,48 @@ public final class ConversationTurn: Identifiable {
         if case .failed(let failure) = status { return failure }
         return nil
     }
+
+    // MARK: - Storage
+
+    /// The settled form of this turn, for persistence.
+    ///
+    /// Drops the observable wrappers: a streaming block is a live object the
+    /// view watches mutate, which is the wrong shape for a record. An
+    /// unfinished tool is stored as failed, because a turn that was
+    /// interrupted mid-call did not get its result either way.
+    public var storableSegments: [TurnSegment] {
+        segments.map { segment in
+            switch segment {
+            case .thinking(let block): .thinking(block.text)
+            case .text(let block): .text(block.text)
+            case .tool(let call): .tool(name: call.name, failed: call.failed || !call.finished)
+            }
+        }
+    }
+
+    /// Rebuilds the segments of a stored turn.
+    ///
+    /// Thinking arrives collapsed: on reload the answer is already there, so
+    /// the reasoning is no longer the main event — the same rule streaming
+    /// applies when prose starts.
+    public func restore(_ stored: [TurnSegment]) {
+        segments = stored.map { segment in
+            switch segment {
+            case .thinking(let text):
+                let block = ThinkingBlock()
+                block.text = text
+                block.isExpanded = false
+                return .thinking(block)
+            case .text(let text):
+                let block = TextBlock()
+                block.text = text
+                return .text(block)
+            case .tool(let name, let failed):
+                let call = ToolCall(name: name)
+                call.finished = true
+                call.failed = failed
+                return .tool(call)
+            }
+        }
+    }
 }

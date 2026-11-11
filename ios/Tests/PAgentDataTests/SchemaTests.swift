@@ -40,21 +40,23 @@ struct SchemaTranslatabilityTests {
     func containerBuilds() throws {
         // The broadest check available: SwiftData validates every model,
         // attribute, index, and relationship when the container is created.
-        // If any of the six models is untranslatable, this is where it shows.
+        // If any model is untranslatable, this is where it shows.
         _ = try PAgentSchema.inMemoryContainer()
     }
 
     @Test("every §5 model is registered")
     func allModelsRegistered() {
-        #expect(PAgentSchema.models.count == 6)
+        #expect(PAgentSchema.models.count == 8)
         let names = PAgentSchema.models.map { String(describing: $0) }.sorted()
         #expect(
             names == [
+                "Conversation",
                 "InterestTag",
                 "ItineraryItem",
                 "ItineraryProposal",
                 "ProfileSnapshot",
                 "SignalEvent",
+                "StoredTurn",
                 "TagEvidence",
             ]
         )
@@ -633,5 +635,140 @@ struct RetentionSweeperTests {
         #expect(signals.map(\.source) == [.shared])
         #expect(try verify.fetch(FetchDescriptor<InterestTag>()).count == 1)
         #expect(try verify.fetch(FetchDescriptor<TagEvidence>()).count == 1)
+    }
+}
+
+// MARK: - Conversations
+
+@Suite("Conversation persistence")
+struct ConversationPersistenceTests {
+    @Test("a conversation round-trips with its turns and segments")
+    func roundTrip() throws {
+        let (_, context) = try freshContext()
+
+        let segments: [TurnSegment] = [
+            .thinking("先看日历"),
+            .tool(name: "search_calendar", failed: true),
+            .text("周六上午看起来是空的。"),
+        ]
+        let turn = StoredTurn(
+            startedAt: epoch,
+            prompt: "周六上午有空吗？",
+            segmentsData: try JSONEncoder().encode(segments),
+            usage: Usage(inputTokens: 1232, outputTokens: 147, cacheReadInputTokens: 512),
+            requestBody: #"{"model":"deepseek-flash"}"#
+        )
+        let conversation = Conversation(
+            title: Conversation.title(from: "周六上午有空吗？"),
+            createdAt: epoch,
+            retentionUntil: epoch + 180 * day,
+            turns: [turn]
+        )
+        context.insert(conversation)
+        try context.save()
+
+        let loaded = try #require(try context.fetch(Conversation.recent()).first)
+        #expect(loaded.title == "周六上午有空吗？")
+        #expect(loaded.turns.count == 1)
+
+        let loadedTurn = try #require(loaded.turns.first)
+        #expect(loadedTurn.prompt == "周六上午有空吗？")
+        // The ordering is the point: a thinking block, then the tool it led
+        // to, then the answer. A set would lose it.
+        #expect(try loadedTurn.decodedSegments() == segments)
+        #expect(loadedTurn.usage?.cacheReadInputTokens == 512)
+        #expect(loadedTurn.requestBody != nil)
+    }
+
+    @Test("deleting a conversation cascades to its turns")
+    func cascade() throws {
+        let (_, context) = try freshContext()
+
+        let conversation = Conversation(
+            title: "x",
+            createdAt: epoch,
+            retentionUntil: epoch + day,
+            turns: [
+                StoredTurn(startedAt: epoch, prompt: "a", segmentsData: Data("[]".utf8)),
+                StoredTurn(startedAt: epoch + 1, prompt: "b", segmentsData: Data("[]".utf8)),
+            ]
+        )
+        context.insert(conversation)
+        try context.save()
+        #expect(try context.fetch(FetchDescriptor<StoredTurn>()).count == 2)
+
+        context.delete(conversation)
+        try context.save()
+        // Orphaned turns would accumulate invisibly — nothing in the UI ever
+        // lists a turn without its conversation.
+        #expect(try context.fetch(FetchDescriptor<StoredTurn>()).isEmpty)
+    }
+
+    @Test("recent() orders by last use, not creation")
+    func recentOrdering() throws {
+        let (_, context) = try freshContext()
+
+        let older = Conversation(title: "older", createdAt: epoch, retentionUntil: epoch + day)
+        let newer = Conversation(
+            title: "newer", createdAt: epoch + day, retentionUntil: epoch + 2 * day
+        )
+        context.insert(older)
+        context.insert(newer)
+        // Revisiting the older conversation has to lift it back to the top,
+        // which is why the sort is on `updatedAt` rather than `createdAt`.
+        older.updatedAt = epoch + 2 * day
+        try context.save()
+
+        let titles = try context.fetch(Conversation.recent()).map(\.title)
+        #expect(titles == ["older", "newer"])
+    }
+
+    @Test("an unrecognised segment kind decodes as text rather than failing")
+    func forwardCompatibleSegments() throws {
+        // A transcript written by a newer build. Losing the whole conversation
+        // over one unknown segment would be a worse outcome than showing a
+        // placeholder for it.
+        let future = Data(#"[{"kind":"proposal","id":"abc"}]"#.utf8)
+        let decoded = try JSONDecoder().decode([TurnSegment].self, from: future)
+        #expect(decoded.count == 1)
+        if case .text(let placeholder) = decoded[0] {
+            #expect(placeholder.contains("proposal"))
+        } else {
+            Issue.record("expected a text placeholder, got \(decoded[0])")
+        }
+    }
+
+    @Test("title() clips a long first line and keeps a short one")
+    func titleClipping() {
+        #expect(Conversation.title(from: "  周六上午有空吗？\n第二行  ") == "周六上午有空吗？")
+        let long = String(repeating: "安", count: 60)
+        let title = Conversation.title(from: long)
+        #expect(title.count == 40)
+        #expect(title.hasSuffix("…"))
+    }
+
+    @Test("the sweep deletes expired conversations, not just signals")
+    func sweepCoversConversations() async throws {
+        let container = try PAgentSchema.inMemoryContainer()
+        let context = ModelContext(container)
+
+        let stale = Conversation(
+            title: "stale", createdAt: epoch - 200 * day, retentionUntil: epoch - day,
+            turns: [StoredTurn(startedAt: epoch - 200 * day, prompt: "x", segmentsData: Data("[]".utf8))]
+        )
+        let fresh = Conversation(
+            title: "fresh", createdAt: epoch, retentionUntil: epoch + 180 * day
+        )
+        context.insert(stale)
+        context.insert(fresh)
+        try context.save()
+
+        let deleted = try await RetentionSweeper(modelContainer: container).sweep(asOf: epoch)
+        #expect(deleted == 1)
+
+        let remaining = try ModelContext(container).fetch(Conversation.recent()).map(\.title)
+        #expect(remaining == ["fresh"])
+        // The cascade has to reach storage, not just the in-memory graph.
+        #expect(try ModelContext(container).fetch(FetchDescriptor<StoredTurn>()).isEmpty)
     }
 }

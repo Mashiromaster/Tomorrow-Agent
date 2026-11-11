@@ -18,6 +18,8 @@ public enum PAgentSchema {
         ProfileSnapshot.self,
         ItineraryProposal.self,
         ItineraryItem.self,
+        Conversation.self,
+        StoredTurn.self,
     ]
 
     /// Schema version 1 — the Phase 0 baseline.
@@ -144,16 +146,31 @@ public enum PAgentSchema {
 /// have.
 @ModelActor
 public actor RetentionSweeper {
-    /// Returns how many signals were deleted.
+    /// Returns how many rows were deleted, across every table with a horizon.
+    ///
+    /// Conversations are swept here too, not just signals. A transcript holds
+    /// whatever the user typed — the least structured personal data in the
+    /// store — so exempting it would make §9.3's automatic-retention promise
+    /// true of everything except the most sensitive table.
     public func sweep(asOf now: Date = .now) throws -> Int {
-        let expired = try modelContext.fetch(SignalEvent.expired(asOf: now))
-        guard !expired.isEmpty else { return 0 }
+        var deleted = 0
 
-        for signal in expired {
+        let expiredSignals = try modelContext.fetch(SignalEvent.expired(asOf: now))
+        for signal in expiredSignals {
             modelContext.delete(signal)
         }
+        deleted += expiredSignals.count
+
+        // `.cascade` on `Conversation.turns` takes the turns with it.
+        let expiredConversations = try modelContext.fetch(Conversation.expired(asOf: now))
+        for conversation in expiredConversations {
+            modelContext.delete(conversation)
+        }
+        deleted += expiredConversations.count
+
+        guard deleted > 0 else { return 0 }
         try modelContext.save()
-        return expired.count
+        return deleted
     }
 
     /// Deletes every signal from one source.

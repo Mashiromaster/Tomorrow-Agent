@@ -32,12 +32,83 @@ public final class PlannerModel {
     public typealias TokenProviderFactory = @Sendable (URL) async -> any DeviceTokenProviding
 
     private let makeTokenProvider: TokenProviderFactory?
+    private let store: any ConversationStoring
     private var task: Task<Void, Never>?
 
     public private(set) var turns: [ConversationTurn] = []
+    public private(set) var conversations: [ConversationSummary] = []
+    /// `nil` until the first turn — a conversation row is only created once
+    /// there is something in it, so opening the app does not litter the list
+    /// with empties.
+    public private(set) var conversationID: UUID?
 
-    public init(tokenProvider: TokenProviderFactory? = nil) {
+    /// Set when a save fails. Surfaced as a banner rather than thrown: losing
+    /// the transcript is bad, losing the answer on screen because the disk is
+    /// full would be worse.
+    public private(set) var storeWarning: String?
+
+    public init(
+        tokenProvider: TokenProviderFactory? = nil,
+        store: any ConversationStoring = NullConversationStore()
+    ) {
         self.makeTokenProvider = tokenProvider
+        self.store = store
+    }
+
+    // MARK: - Conversations
+
+    public func loadConversations() {
+        do {
+            conversations = try store.recentConversations(limit: 50)
+        } catch {
+            storeWarning = "无法读取历史对话：\(error.localizedDescription)"
+        }
+    }
+
+    public func open(_ id: UUID) {
+        task?.cancel()
+        do {
+            turns = try store.turns(in: id)
+            conversationID = id
+            storeWarning = nil
+        } catch {
+            storeWarning = "无法打开这段对话：\(error.localizedDescription)"
+        }
+    }
+
+    public func startNewConversation() {
+        task?.cancel()
+        turns.removeAll()
+        conversationID = nil
+        storeWarning = nil
+    }
+
+    public func delete(_ id: UUID) {
+        do {
+            try store.deleteConversation(id)
+            if conversationID == id { startNewConversation() }
+            loadConversations()
+        } catch {
+            storeWarning = "删除失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func persist(_ turn: ConversationTurn) {
+        do {
+            let id: UUID
+            if let existing = conversationID {
+                id = existing
+            } else {
+                id = try store.createConversation(titledFrom: turn.prompt)
+                conversationID = id
+            }
+            try store.append(turn, to: id)
+            loadConversations()
+        } catch {
+            // Deliberately not rethrown. The turn is on screen and correct;
+            // only its persistence failed, and the user can still read it.
+            storeWarning = "这次对话没能保存：\(error.localizedDescription)"
+        }
     }
 
     public var isRunning: Bool { turns.last?.status.isStreaming ?? false }
@@ -77,10 +148,7 @@ public final class PlannerModel {
         }
     }
 
-    public func clear() {
-        task?.cancel()
-        turns.removeAll()
-    }
+    public func clear() { startNewConversation() }
 
     private func perform(_ turn: ConversationTurn) async {
         guard let baseURL = ProxyConfiguration.baseURL else {
@@ -162,6 +230,11 @@ public final class PlannerModel {
         } catch {
             turn.status = .failed(Self.describe(error))
         }
+
+        // Saved whatever the outcome. A failed turn is part of the history —
+        // storing only successes would make the transcript a record of a
+        // conversation that did not happen.
+        if !Task.isCancelled { persist(turn) }
     }
 
     private static func apply(_ activity: AgentActivity, to turn: ConversationTurn) {

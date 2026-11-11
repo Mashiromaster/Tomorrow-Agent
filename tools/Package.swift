@@ -32,7 +32,11 @@ let package = Package(
     name: "PAgentPreview",
     platforms: [.macOS("26.0")],
     dependencies: [
-        .package(path: "../core")
+        .package(path: "../core"),
+        // SwiftData runs on macOS, so the harness exercises the real store
+        // rather than a stub — persistence that is only ever compiled is not
+        // persistence that is known to work.
+        .package(path: "../ios"),
     ],
     targets: [
         .executableTarget(
@@ -40,6 +44,7 @@ let package = Package(
             dependencies: [
                 .product(name: "PAgentCore", package: "core"),
                 .product(name: "PAgentNet", package: "core"),
+                .product(name: "PAgentData", package: "ios"),
             ],
             path: "Sources/pagent-preview",
             swiftSettings: [.swiftLanguageMode(.v6)]

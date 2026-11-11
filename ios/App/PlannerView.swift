@@ -27,6 +27,7 @@ public struct PlannerView: View {
     @State private var model: PlannerModel
     @State private var draft = ""
     @State private var showingDisclosure = false
+    @State private var showingHistory = false
     @FocusState private var composerFocused: Bool
 
     /// - Parameter tokenProvider: how to authenticate to the proxy. Defaults
@@ -39,15 +40,24 @@ public struct PlannerView: View {
     ///   keyboard; `nil` in the shipping app.
     public init(
         tokenProvider: PlannerModel.TokenProviderFactory? = nil,
+        store: (any ConversationStoring)? = nil,
         initialPrompt: String? = nil
     ) {
-        _model = State(initialValue: PlannerModel(tokenProvider: tokenProvider))
+        _model = State(
+            initialValue: PlannerModel(
+                tokenProvider: tokenProvider,
+                store: store ?? NullConversationStore()
+            )
+        )
         self.initialPrompt = initialPrompt
     }
 
     public var body: some View {
         VStack(spacing: 0) {
             transcript
+            if let warning = model.storeWarning {
+                StoreWarningBanner(message: warning)
+            }
             Divider()
             composer
         }
@@ -67,15 +77,22 @@ public struct PlannerView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
+                    Button("新对话", systemImage: "square.and.pencil") {
+                        model.startNewConversation()
+                    }
+                    .disabled(model.turns.isEmpty)
+
+                    Button("历史对话", systemImage: "clock.arrow.circlepath") {
+                        model.loadConversations()
+                        showingHistory = true
+                    }
+
+                    Divider()
+
                     Button("我发出去了什么", systemImage: "doc.text.magnifyingglass") {
                         showingDisclosure = true
                     }
                     .disabled(model.lastRequestBody == nil)
-
-                    Button("清空对话", systemImage: "trash", role: .destructive) {
-                        model.clear()
-                    }
-                    .disabled(model.turns.isEmpty)
                 } label: {
                     Label("更多", systemImage: "ellipsis.circle")
                 }
@@ -83,6 +100,14 @@ public struct PlannerView: View {
         }
         .sheet(isPresented: $showingDisclosure) {
             OutboundDisclosureView(requestBody: model.lastRequestBody)
+        }
+        .sheet(isPresented: $showingHistory) {
+            ConversationListView(
+                conversations: model.conversations,
+                currentID: model.conversationID,
+                onOpen: { model.open($0); showingHistory = false },
+                onDelete: { model.delete($0) }
+            )
         }
         .task {
             if let initialPrompt, model.turns.isEmpty { model.send(initialPrompt) }
@@ -380,7 +405,103 @@ private struct AnswerView: View {
     @Bindable var block: ConversationTurn.TextBlock
 
     var body: some View {
-        Text(block.text)
+        MarkdownText(block.text)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Renders the subset of Markdown the agent emits.
+///
+/// Block structure comes from ``PAgentCore/MarkdownBlock`` — `AttributedString`
+/// handles inline marks well but leaves `- item` and `# heading` as literal
+/// text, which is most of what the model writes. Inline syntax within each
+/// block is still left to `AttributedString`, which is where it belongs.
+///
+/// Re-parsed on every delta while streaming. That is cheap at these lengths
+/// and keeps the rendering honest mid-stream: an unterminated code fence
+/// renders as code rather than flipping from prose the moment it closes.
+struct MarkdownText: View {
+    private let blocks: [MarkdownBlock]
+
+    init(_ markdown: String) {
+        blocks = MarkdownBlock.blocks(from: markdown)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(blocks) { block in
+                switch block {
+                case .paragraph(let text):
+                    inline(text)
+                case .heading(let level, let text):
+                    inline(text)
+                        .font(headingFont(level))
+                        .padding(.top, 2)
+                case .bulleted(let items):
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                            marker("•", item)
+                        }
+                    }
+                case .numbered(let items):
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                            marker("\(item.number).", item.text)
+                        }
+                    }
+                case .code(_, let text):
+                    Text(text)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(.quaternary.opacity(0.35))
+                        )
+                case .quote(let text):
+                    inline(text)
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 12)
+                        .overlay(alignment: .leading) {
+                            Rectangle().fill(.quaternary).frame(width: 3)
+                        }
+                }
+            }
+        }
+    }
+
+    /// Hanging indent, so a wrapped list item lines up under its own text
+    /// rather than under the marker.
+    private func marker(_ symbol: String, _ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(symbol)
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 16, alignment: .trailing)
+            inline(text)
+        }
+    }
+
+    private func headingFont(_ level: Int) -> Font {
+        switch level {
+        case 1: .title3.weight(.semibold)
+        case 2: .headline
+        default: .subheadline.weight(.semibold)
+        }
+    }
+
+    /// Inline marks via `AttributedString`.
+    ///
+    /// `.inlineOnlyPreservingWhitespace` rather than `.full`: block parsing
+    /// already happened, and the full syntax would re-interpret a stray `#`
+    /// inside a paragraph as a heading.
+    private func inline(_ text: String) -> some View {
+        let attributed =
+            (try? AttributedString(
+                markdown: text,
+                options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+            )) ?? AttributedString(text)
+        return Text(attributed)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -550,5 +671,99 @@ struct OutboundDisclosureView: View {
             }
         }
         .frame(minWidth: 520, minHeight: 480)
+    }
+}
+
+// MARK: - History
+
+/// The saved conversations.
+///
+/// Deliberately not a persistent sidebar: on iPhone there is no room for one,
+/// and keeping a single layout for both platforms is what lets `PlannerView`
+/// be the same file in the app and in the macOS harness.
+private struct ConversationListView: View {
+    let conversations: [ConversationSummary]
+    let currentID: UUID?
+    let onOpen: (UUID) -> Void
+    let onDelete: (UUID) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if conversations.isEmpty {
+                    ContentUnavailableView(
+                        "还没有历史对话",
+                        systemImage: "bubble.left.and.bubble.right",
+                        description: Text("对话会在发出第一条消息后自动保存。")
+                    )
+                } else {
+                    List {
+                        ForEach(conversations) { conversation in
+                            Button { onOpen(conversation.id) } label: {
+                                row(conversation)
+                            }
+                            .buttonStyle(.plain)
+                            .swipeActions {
+                                Button("删除", role: .destructive) { onDelete(conversation.id) }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("历史对话")
+            #if os(iOS)
+                .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+        .frame(minWidth: 420, minHeight: 440)
+    }
+
+    private func row(_ conversation: ConversationSummary) -> some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(conversation.title)
+                    .lineLimit(1)
+                Text(conversation.updatedAt, format: .relative(presentation: .named))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+            if conversation.id == currentID {
+                Image(systemName: "checkmark")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tint)
+            }
+        }
+        .contentShape(.rect)
+    }
+}
+
+/// Shown when a turn could not be saved.
+///
+/// A banner rather than an alert: the answer is on screen and readable, and
+/// interrupting to say "the transcript did not persist" would treat the lesser
+/// failure as the larger one.
+private struct StoreWarningBanner: View {
+    let message: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+            Text(message).lineLimit(2)
+            Spacer(minLength: 0)
+        }
+        .font(.caption)
+        .foregroundStyle(.orange)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.orange.opacity(0.1))
     }
 }

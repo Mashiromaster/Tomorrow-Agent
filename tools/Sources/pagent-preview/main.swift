@@ -1,8 +1,10 @@
 import CryptoKit
 import Foundation
+import SwiftData
 import SwiftUI
 
 import PAgentCore
+import PAgentData
 import PAgentNet
 
 // A macOS window running the real `PlannerView`.
@@ -108,6 +110,18 @@ func signingKey() -> String? {
 @main
 struct PreviewApp: App {
     private let secret = signingKey()
+    private let container = Self.makeContainer()
+
+    /// An on-disk store under the harness's own directory.
+    ///
+    /// On disk rather than in memory, because the thing worth testing is that
+    /// a transcript survives a quit. Its own directory rather than the app's,
+    /// because the harness must not be able to corrupt real data.
+    private static func makeContainer() -> ModelContainer? {
+        let directory = URL.applicationSupportDirectory.appending(path: "PAgentPreview")
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return try? PAgentSchema.container(url: directory.appending(path: "Preview.store"))
+    }
 
     var body: some Scene {
         WindowGroup("PAgent — macOS 预览") {
@@ -117,6 +131,9 @@ struct PreviewApp: App {
                         PlannerView(
                             tokenProvider: { _ in
                                 LocalTokenProvider(secret: secret, deviceID: "macos-preview")
+                            },
+                            store: container.map {
+                                SwiftDataConversationStore(context: ModelContext($0))
                             },
                             // `--prompt "…"` sends one turn at launch. Exists
                             // so the window can be screenshotted mid-stream
